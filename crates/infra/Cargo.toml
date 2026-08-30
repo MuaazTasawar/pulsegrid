@@ -1,0 +1,13 @@
+[package]
+name = "infra"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.104"
+async-nats = "0.50.0"
+deadpool-redis = { version = "0.23.1", features = ["rt_tokio_1"] }
+domain = { version = "0.1.0", path = "../domain" }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate"] }
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"

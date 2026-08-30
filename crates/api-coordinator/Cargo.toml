@@ -1,0 +1,18 @@
+[package]
+name = "api-coordinator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+argon2 = "0.6.0"
+axum = { version = "0.8.9", features = ["ws"] }
+config = "0.15.25"
+domain = { version = "0.1.0", path = "../domain" }
+dotenvy = "0.15.7"
+infra = { version = "0.1.0", path = "../infra" }
+jsonwebtoken = "11.0.0"
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+validator = { version = "0.21.0", features = ["derive"] }
