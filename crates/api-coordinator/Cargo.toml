@@ -1,18 +1,26 @@
 [package]
 name = "api-coordinator"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 
 [dependencies]
-argon2 = "0.6.0"
-axum = { version = "0.8.9", features = ["ws"] }
-config = "0.15.25"
-domain = { version = "0.1.0", path = "../domain" }
-dotenvy = "0.15.7"
-infra = { version = "0.1.0", path = "../infra" }
-jsonwebtoken = "11.0.0"
-serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["full"] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-validator = { version = "0.21.0", features = ["derive"] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid.workspace = true
+chrono.workspace = true
+axum = { version = "0.8", features = ["ws"] }
+axum-extra = { version = "0.12", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace"] }
+argon2 = "0.6"
+validator = { version = "0.21", features = ["derive"] }
+config = "0.15"
+dotenvy = "0.15"
+domain = { path = "../domain" }
+infra = { path = "../infra" }
+rustls = { version = "0.23.43", default-features = false, features = ["ring"] }
+jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto"] }
