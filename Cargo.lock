@@ -1006,16 +1006,21 @@ dependencies = [
 name = "fanout-worker"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-nats",
  "axum",
  "config",
  "dashmap",
  "domain",
  "dotenvy",
+ "futures-util",
  "infra",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -1705,6 +1710,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 name = "loadgen"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "futures-util",
  "hdrhistogram",
