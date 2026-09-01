@@ -1,12 +1,18 @@
 [package]
 name = "loadgen"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 
 [dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
-clap = { version = "4.6.6", features = ["derive"] }
-futures-util = "0.3.34"
-hdrhistogram = "7.6.0"
-tokio = { version = "1.53.1", features = ["full"] }
-tokio-tungstenite = "0.30.0"
+uuid.workspace = true
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+clap = { version = "4", features = ["derive"] }
+hdrhistogram = "7"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+domain = { path = "../domain" }
