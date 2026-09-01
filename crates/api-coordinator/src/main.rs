@@ -12,11 +12,13 @@ use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
 use config::Config;
+use services::alert_dispatch_service::AlertDispatchService;
 use services::device_service::DeviceService;
 
 #[derive(Clone)]
 pub struct AppState {
     pub device_service: DeviceService,
+    pub alert_dispatch_service: AlertDispatchService,
     pub jwt_secret: String,
 }
 
@@ -36,16 +38,25 @@ async fn main() -> anyhow::Result<()> {
     infra::db::run_migrations(&pool).await?;
     tracing::info!("database connected and migrated");
 
-    let device_repo = infra::DeviceRepository::new(pool);
-    let device_service = DeviceService::new(device_repo, config.jwt_secret.clone());
+    let nats = infra::nats::connect(&config.nats_url).await?;
+    tracing::info!("nats connected");
+
+    let device_repo = infra::DeviceRepository::new(pool.clone());
+    let alert_repo = infra::AlertRepository::new(pool);
+
+    let device_service = DeviceService::new(device_repo.clone(), config.jwt_secret.clone());
+    let alert_dispatch_service =
+        AlertDispatchService::new(alert_repo, device_repo, nats);
 
     let state = AppState {
         device_service,
+        alert_dispatch_service,
         jwt_secret: config.jwt_secret.clone(),
     };
 
     let app = Router::new()
         .merge(routes::devices::router())
+        .merge(routes::alerts::router())
         .layer(
             ServiceBuilder::new()
                 .layer(axum::middleware::from_fn(middleware::request_id::request_id_middleware))

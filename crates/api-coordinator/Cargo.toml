@@ -24,3 +24,4 @@ domain = { path = "../domain" }
 infra = { path = "../infra" }
 rustls = { version = "0.23.43", default-features = false, features = ["ring"] }
 jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto"] }
+async-nats = "0.50.0"
