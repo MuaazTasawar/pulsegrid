@@ -181,10 +181,11 @@ impl AlertRepository {
     ) -> Result<(), AppError> {
         sqlx::query(
             r#"
-            INSERT INTO alert_deliveries (alert_id, shard_prefix, published_at, devices_in_shard)
-            VALUES ($1, $2, now(), $3)
+            INSERT INTO alert_deliveries (id, alert_id, shard_prefix, published_at, devices_in_shard)
+            VALUES ($1, $2, $3, now(), $4)
             "#,
         )
+        .bind(uuid::Uuid::new_v4())
         .bind(alert_id.0)
         .bind(shard_prefix)
         .bind(devices_in_shard as i32)

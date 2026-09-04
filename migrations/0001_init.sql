@@ -27,7 +27,7 @@ CREATE TABLE alerts (
 -- shards covering ~142K devices in 340ms" comes from aggregating this
 -- table, not from trusting the coordinator's in-memory state.
 CREATE TABLE alert_deliveries (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                  UUID PRIMARY KEY,
     alert_id            UUID NOT NULL REFERENCES alerts(id),
     shard_prefix        VARCHAR(8) NOT NULL,
     published_at        TIMESTAMPTZ NOT NULL,
