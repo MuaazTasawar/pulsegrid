@@ -20,8 +20,16 @@ pub fn spawn_shard_subscribers(nats: NatsClient, registry: ConnectionRegistry, o
             let result = infra::nats::subscribe_and_handle(&nats, &subject, |payload| {
                 match serde_json::from_slice::<Alert>(&payload) {
                     Ok(_alert) => {
+                        let broadcast_start = std::time::Instant::now();
                         let (delivered, dropped) = registry.broadcast_to_shard(&prefix, &payload);
-                        tracing::info!(shard = %prefix, delivered, dropped, "alert fanned out to shard");
+                        let broadcast_duration_us = broadcast_start.elapsed().as_micros();
+                        tracing::info!(
+                            shard = %prefix,
+                            delivered,
+                            dropped,
+                            broadcast_duration_us,
+                            "alert fanned out to shard"
+                        );
                     }
                     Err(e) => {
                         tracing::error!(shard = %prefix, error = ?e, "failed to deserialize alert payload");
