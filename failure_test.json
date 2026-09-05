@@ -1,0 +1,1 @@
+{"lat": 24.8607, "lon": 67.0011, "radius_meters": 5000, "severity": "critical", "title": "Failure test", "message": "testing partial failure handling"}
