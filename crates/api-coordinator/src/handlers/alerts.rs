@@ -1,11 +1,12 @@
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::Json;
 use domain::AlertSeverity;
 use serde::Deserialize;
 use validator::Validate;
 
 use crate::errors::ApiError;
-use crate::services::alert_dispatch_service::DispatchResult;
 use crate::AppState;
 use domain::AppError;
 
@@ -45,10 +46,8 @@ pub struct DispatchAlertRequest {
 pub async fn dispatch_alert(
     State(state): State<AppState>,
     Json(payload): Json<DispatchAlertRequest>,
-) -> Result<Json<DispatchResult>, ApiError> {
-    payload
-        .validate()
-        .map_err(|e| AppError::Validation(e.to_string()))?;
+) -> Result<impl IntoResponse, ApiError> {
+    payload.validate().map_err(|e| AppError::Validation(e.to_string()))?;
 
     let result = state
         .alert_dispatch_service
@@ -62,5 +61,11 @@ pub async fn dispatch_alert(
         )
         .await?;
 
-    Ok(Json(result))
+    let status = if result.failed_shards.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::MULTI_STATUS
+    };
+
+    Ok((status, Json(result)))
 }

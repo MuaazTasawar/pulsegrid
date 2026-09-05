@@ -6,6 +6,7 @@ mod middleware;
 mod routes;
 mod services;
 
+use axum::routing::get;
 use axum::Router;
 use tokio::signal;
 use tower::ServiceBuilder;
@@ -19,6 +20,7 @@ use services::device_service::DeviceService;
 pub struct AppState {
     pub device_service: DeviceService,
     pub alert_dispatch_service: AlertDispatchService,
+    pub shard_registry: infra::ShardRegistry,
     pub jwt_secret: String,
 }
 
@@ -43,22 +45,30 @@ async fn main() -> anyhow::Result<()> {
     let nats = infra::nats::connect(&config.nats_url).await?;
     tracing::info!("nats connected");
 
+    let redis_pool = infra::redis::build_pool(&config.redis_url)?;
+    let shard_registry = infra::ShardRegistry::new(redis_pool);
+
     let device_repo = infra::DeviceRepository::new(pool.clone());
     let alert_repo = infra::AlertRepository::new(pool);
 
     let device_service = DeviceService::new(device_repo.clone(), config.jwt_secret.clone());
-    let alert_dispatch_service =
-        AlertDispatchService::new(alert_repo, device_repo, nats);
+    let alert_dispatch_service = AlertDispatchService::new(alert_repo, device_repo, nats);
 
     let state = AppState {
         device_service,
         alert_dispatch_service,
+        shard_registry,
         jwt_secret: config.jwt_secret.clone(),
     };
 
     let app = Router::new()
         .merge(routes::devices::router())
         .merge(routes::alerts::router())
+        .route("/health", get(|| async { "ok" }))
+        .route("/ready", get(|| async { "ready" }))
+        .route("/metrics", get(|| async {
+            "# HELP pulsegrid_coordinator_up Coordinator process is running\n# TYPE pulsegrid_coordinator_up gauge\npulsegrid_coordinator_up 1\n"
+        }))
         .layer(
             ServiceBuilder::new()
                 .layer(axum::middleware::from_fn(middleware::request_id::request_id_middleware))

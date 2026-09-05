@@ -1,6 +1,8 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -9,6 +11,11 @@ use crate::AppState;
 #[derive(Debug, Deserialize)]
 pub struct ConnectParams {
     pub shard_prefix: String,
+    /// JWT issued at /devices/register. WebSocket upgrade requests can't
+    /// carry a normal Authorization header reliably across all clients,
+    /// so the token travels as a query parameter instead -- a common,
+    /// accepted pattern for WS auth (same approach Slack/Discord use).
+    pub token: String,
 }
 
 pub async fn ws_upgrade_handler(
@@ -17,9 +24,25 @@ pub async fn ws_upgrade_handler(
     Query(params): Query<ConnectParams>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    // Reject up front if this worker doesn't own the claimed shard --
-    // fail fast rather than accept a connection that will never
-    // receive anything, matching the design note in config.rs.
+    let verified_device_id = match domain::verify_token(&params.token, &state.jwt_secret) {
+        Ok(id) => id,
+        Err(_) => {
+            return (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response();
+        }
+    };
+
+    // The token must belong to the SAME device_id the client is trying
+    // to connect as -- this is what closes the impersonation gap: a
+    // valid token for device A can no longer be used to open a
+    // connection (and receive alerts) as device B.
+    if verified_device_id != device_id {
+        return (
+            StatusCode::FORBIDDEN,
+            "token does not match the requested device_id",
+        )
+            .into_response();
+    }
+
     if !state.owned_prefixes.contains(&params.shard_prefix) {
         return (
             axum::http::StatusCode::MISDIRECTED_REQUEST,
@@ -58,8 +81,6 @@ async fn handle_socket(socket: WebSocket, device_id: Uuid, shard_prefix: String,
         }
     });
 
-    // Forwarding task: anything the connection_registry broadcasts into
-    // this device's channel gets written out to the actual socket.
     let forward_handle = tokio::spawn(async move {
         while let Some(payload) = rx.recv().await {
             if ws_sender.send(Message::Binary(payload.into())).await.is_err() {
@@ -68,10 +89,6 @@ async fn handle_socket(socket: WebSocket, device_id: Uuid, shard_prefix: String,
         }
     });
 
-    // Read loop: mainly exists to detect disconnects (client close frame
-    // or socket error) -- this app doesn't expect meaningful inbound
-    // messages from the client beyond the implicit ping/pong axum
-    // already handles.
     while let Some(msg) = ws_receiver.next().await {
         if msg.is_err() {
             break;
@@ -86,5 +103,3 @@ async fn handle_socket(socket: WebSocket, device_id: Uuid, shard_prefix: String,
     }
     tracing::info!(%device_id, connections = state.registry.connection_count(), "device disconnected");
 }
-
-use futures_util::{SinkExt, StreamExt};

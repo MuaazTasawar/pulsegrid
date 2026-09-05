@@ -5,6 +5,7 @@ use uuid::Uuid;
 pub struct Config {
     pub redis_url: String,
     pub nats_url: String,
+    pub jwt_secret: String,
     pub port: u16,
     /// The shard prefixes this worker instance owns. Only devices whose
     /// own shard_prefix is in this set may connect here -- the ws
@@ -26,6 +27,8 @@ impl Config {
             .map_err(|_| AppError::Validation("REDIS_URL not set".into()))?;
         let nats_url = std::env::var("NATS_URL")
             .map_err(|_| AppError::Validation("NATS_URL not set".into()))?;
+        let jwt_secret = std::env::var("JWT_SECRET")
+            .map_err(|_| AppError::Validation("JWT_SECRET not set".into()))?;
         let port = std::env::var("FANOUT_WORKER_PORT")
             .unwrap_or_else(|_| "8081".to_string())
             .parse::<u16>()
@@ -46,6 +49,7 @@ impl Config {
         Ok(Self {
             redis_url,
             nats_url,
+            jwt_secret,
             port,
             owned_prefixes,
             instance_id: Uuid::new_v4().to_string(),

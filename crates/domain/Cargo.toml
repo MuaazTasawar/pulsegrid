@@ -10,3 +10,4 @@ anyhow.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 geohash = "0.13"
+jsonwebtoken = "11.0.0"

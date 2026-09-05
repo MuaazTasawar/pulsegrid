@@ -20,5 +20,27 @@ services:
     ports:
       - "4222:4222"
 
+  api-coordinator:
+    build: .
+    command: api-coordinator
+    env_file: .env
+    ports:
+      - "8090:8090"
+    depends_on:
+      - postgres
+      - redis
+      - nats
+
+  fanout-worker:
+    build: .
+    command: fanout-worker
+    env_file: .env
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+      - redis
+      - nats
+
 volumes:
   pgdata:

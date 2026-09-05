@@ -73,3 +73,41 @@ impl PresenceRegistry {
         Ok(())
     }
 }
+
+/// Maps a geohash shard prefix to the base WebSocket URL of the
+/// fanout-worker instance that currently owns it. Without this, a
+/// client has no way to know which host to connect to once more than
+/// one fanout-worker instance exists -- this is what makes the
+/// architecture's "many workers, many shards" story actually usable
+/// by a real client, not just correct in theory.
+#[derive(Clone)]
+pub struct ShardRegistry {
+    pool: Pool,
+}
+
+impl ShardRegistry {
+    pub fn new(pool: Pool) -> Self {
+        Self { pool }
+    }
+
+    fn key(shard_prefix: &str) -> String {
+        format!("shard-worker:{shard_prefix}")
+    }
+
+    pub async fn register_shard(&self, shard_prefix: &str, worker_ws_url: &str) -> Result<(), AppError> {
+        let mut conn = self.pool.get().await.map_err(|e| AppError::Cache(e.to_string()))?;
+        conn.set::<_, _, ()>(Self::key(shard_prefix), worker_ws_url)
+            .await
+            .map_err(|e| AppError::Cache(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn lookup_shard(&self, shard_prefix: &str) -> Result<Option<String>, AppError> {
+        let mut conn = self.pool.get().await.map_err(|e| AppError::Cache(e.to_string()))?;
+        let url: Option<String> = conn
+            .get(Self::key(shard_prefix))
+            .await
+            .map_err(|e| AppError::Cache(e.to_string()))?;
+        Ok(url)
+    }
+}

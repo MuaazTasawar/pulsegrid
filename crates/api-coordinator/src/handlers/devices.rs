@@ -21,6 +21,11 @@ pub struct RegisterDeviceResponse {
     pub device_id: String,
     pub token: String,
     pub shard_prefix: String,
+    /// Base WebSocket URL of the fanout-worker instance that currently
+    /// owns this device's shard. None if no worker has registered
+    /// ownership of that shard yet (e.g. it hasn't started, or nothing
+    /// owns that geographic area in this deployment).
+    pub ws_url: Option<String>,
 }
 
 pub async fn register(
@@ -33,10 +38,17 @@ pub async fn register(
 
     let (device, token) = state.device_service.register(payload.lat, payload.lon).await?;
 
+    let ws_url = state
+        .shard_registry
+        .lookup_shard(&device.shard_prefix)
+        .await
+        .unwrap_or(None);
+
     Ok(Json(RegisterDeviceResponse {
         device_id: device.id.to_string(),
         token,
         shard_prefix: device.shard_prefix,
+        ws_url,
     }))
 }
 
@@ -52,6 +64,7 @@ pub struct UpdateLocationRequest {
 pub struct UpdateLocationResponse {
     pub shard_prefix: String,
     pub shard_changed: bool,
+    pub ws_url: Option<String>,
 }
 
 pub async fn update_location(
@@ -68,8 +81,15 @@ pub async fn update_location(
         .update_location(auth.device_id, payload.lat, payload.lon)
         .await?;
 
+    let ws_url = if shard_changed {
+        state.shard_registry.lookup_shard(&shard_prefix).await.unwrap_or(None)
+    } else {
+        None
+    };
+
     Ok(Json(UpdateLocationResponse {
         shard_prefix,
         shard_changed,
+        ws_url,
     }))
 }
