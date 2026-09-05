@@ -19,3 +19,4 @@ dotenvy = "0.15"
 domain = { path = "../domain" }
 infra = { path = "../infra" }
 futures-util = "0.3.34"
+rustls = { version = "0.23.43", default-features = false, features = ["ring"] }
