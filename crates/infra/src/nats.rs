@@ -1,6 +1,16 @@
 use async_nats::Client;
 use domain::AppError;
 use futures_util::StreamExt;
+use std::time::Duration;
+
+/// How long a single publish attempt (including the flush) is allowed
+/// to take before we give up and treat it as a failure. Without this,
+/// a genuine NATS outage causes publish() to hang on the client's own
+/// internal reconnect/retry logic indefinitely -- unacceptable for a
+/// time-critical alert system, where a fast, visible failure is far
+/// better than a silent hang. Discovered via manual outage testing
+/// (stopping the NATS container mid-request) rather than assumed.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub async fn connect(nats_url: &str) -> Result<Client, AppError> {
     async_nats::connect(nats_url)
@@ -8,27 +18,35 @@ pub async fn connect(nats_url: &str) -> Result<Client, AppError> {
         .map_err(|e| AppError::Messaging(e.to_string()))
 }
 
-/// Publishes raw bytes to a subject. Subject naming itself lives in
-/// domain::Alert::nats_subject_for_prefix -- this stays a thin transport
-/// wrapper so api-coordinator and fanout-worker can't drift on how they
-/// construct subject strings.
+/// Publishes raw bytes to a subject, bounded by PUBLISH_TIMEOUT. If the
+/// timeout elapses (e.g. NATS is unreachable), returns an error rather
+/// than hanging -- the caller (alert_dispatch_service) already treats
+/// any Err here as a failed shard and continues to the next one, so
+/// this timeout is what actually makes that partial-failure handling
+/// meaningful under a real outage instead of just correct on paper.
 pub async fn publish(client: &Client, subject: &str, payload: Vec<u8>) -> Result<(), AppError> {
-    client
-        .publish(subject.to_string(), payload.into())
+    let publish_and_flush = async {
+        client
+            .publish(subject.to_string(), payload.into())
+            .await
+            .map_err(|e| AppError::Messaging(e.to_string()))?;
+        client
+            .flush()
+            .await
+            .map_err(|e| AppError::Messaging(e.to_string()))?;
+        Ok::<(), AppError>(())
+    };
+
+    tokio::time::timeout(PUBLISH_TIMEOUT, publish_and_flush)
         .await
-        .map_err(|e| AppError::Messaging(e.to_string()))?;
-    client
-        .flush()
-        .await
-        .map_err(|e| AppError::Messaging(e.to_string()))?;
-    Ok(())
+        .map_err(|_| {
+            AppError::Messaging(format!(
+                "publish to subject '{subject}' timed out after {}s (NATS may be unreachable)",
+                PUBLISH_TIMEOUT.as_secs()
+            ))
+        })?
 }
 
-/// Subscribes to a subject and invokes `handler` for every message
-/// received, until the subscription ends or the process shuts down.
-/// fanout-worker (Phase 5) calls this once per shard prefix it owns, with
-/// a handler that pushes the payload out to every locally-held WebSocket
-/// connection for that shard.
 pub async fn subscribe_and_handle<F>(
     client: &Client,
     subject: &str,
