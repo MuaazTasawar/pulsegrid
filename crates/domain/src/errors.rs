@@ -3,11 +3,14 @@ use thiserror::Error;
 /// Shared error type across the whole PulseGrid fleet. Each binary crate
 /// (api-coordinator, fanout-worker) wraps this into its own edge-specific
 /// error type (e.g. an Axum IntoResponse impl) rather than exposing it
-/// directly — this stays a pure domain type with zero I/O framework deps.
+/// directly -- this stays a pure domain type with zero I/O framework deps.
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("device not found: {0}")]
     DeviceNotFound(String),
+
+    #[error("not found: {0}")]
+    NotFound(String),
 
     #[error("invalid location: lat={lat}, lon={lon}")]
     InvalidLocation { lat: f64, lon: f64 },
@@ -21,8 +24,20 @@ pub enum AppError {
     #[error("unauthorized")]
     Unauthorized,
 
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("validation error: {0}")]
     Validation(String),
+
+    #[error("configuration error: {0}")]
+    Config(String),
+
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
 
     #[error("database error: {0}")]
     Database(String),
@@ -45,9 +60,12 @@ impl AppError {
         matches!(
             self,
             AppError::DeviceNotFound(_)
+                | AppError::NotFound(_)
                 | AppError::InvalidLocation { .. }
                 | AppError::InvalidRadius(_)
                 | AppError::Unauthorized
+                | AppError::Forbidden(_)
+                | AppError::Conflict(_)
                 | AppError::Validation(_)
         )
     }
