@@ -6,16 +6,21 @@ edition.workspace = true
 [dependencies]
 tokio.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+bytes.workspace = true
+dashmap.workspace = true
+futures-util.workspace = true
+time = "0.3"
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate"] }
 deadpool-redis = { version = "0.23", features = ["rt_tokio_1"] }
 async-nats = "0.50"
-futures-util = "0.3"
 domain = { path = "../domain" }
+
 [dev-dependencies]
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }

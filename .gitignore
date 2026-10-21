@@ -1,3 +1,8 @@
 /target
 .env
+.env.docker
 *.log
+*.pem
+secrets/
+.idea/
+.vscode/

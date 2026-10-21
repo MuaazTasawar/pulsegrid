@@ -12,17 +12,17 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid.workspace = true
 chrono.workspace = true
-axum = { version = "0.8", features = ["ws"] }
+bytes.workspace = true
+futures-util.workspace = true
+axum = "0.8"
 axum-extra = { version = "0.12", features = ["typed-header"] }
 tower = "0.5"
 tower-http = { version = "0.7", features = ["trace"] }
-argon2 = "0.6"
+tower_governor = "0.8.0"
+tokio-stream = { version = "0.1", features = ["sync"] }
 validator = { version = "0.21", features = ["derive"] }
-config = "0.15"
 dotenvy = "0.15"
+async-nats = "0.50.0"
+rustls = { version = "0.23.43", default-features = false, features = ["ring"] }
 domain = { path = "../domain" }
 infra = { path = "../infra" }
-rustls = { version = "0.23.43", default-features = false, features = ["ring"] }
-jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto"] }
-async-nats = "0.50.0"
-tower_governor = "0.8.0"
