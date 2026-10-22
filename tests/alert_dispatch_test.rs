@@ -6,13 +6,8 @@
 //! an alert covering its location, and confirm the audit trail
 //! (alert_deliveries) records the correct shard and device count.
 //!
-//! This does not cover the NATS -> fanout-worker -> WebSocket leg --
-//! that was verified manually in Phase 5/6 against live processes.
-//! Testcontainers doesn't have a maintained NATS module as clean as
-//! its Postgres one, and wiring three coordinated containers (Postgres
-//! + Redis + NATS) into one test is a bigger lift than this phase's
-//! scope. If broader coverage is wanted later, that's the next
-//! concrete step, not a gap to paper over.
+//! This does not cover the NATS -> fanout-worker -> WebSocket leg; that
+//! path is exercised by the end-to-end tests added in a later phase.
 
 use domain::device::Location;
 use domain::{Alert, AlertSeverity, Device};

@@ -1841,8 +1841,10 @@ dependencies = [
 name = "integration-tests"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "domain",
  "infra",
+ "sqlx",
  "testcontainers",
  "testcontainers-modules",
  "tokio",
