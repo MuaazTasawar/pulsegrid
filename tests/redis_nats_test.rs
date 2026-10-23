@@ -10,9 +10,10 @@
 //! `-js`). All keys and subjects are unique per test, so sharing a server
 //! is safe.
 //!
-//! The replay tests compare timestamps taken on this machine with the
-//! NATS server's clock, so host and server clocks must be roughly in sync
-//! (true for local servers and normal Docker setups).
+//! Replay compares an alert's own `created_at` (the publisher's clock) with
+//! the device's cursor, and reads the stream from a minute earlier, so a
+//! clock difference of up to a minute between the publisher and the NATS
+//! server does not matter (Docker Desktop's VM clock often drifts).
 
 use std::time::Duration;
 
@@ -42,6 +43,7 @@ async fn test_redis() -> TestRedis {
         Ok(url) => (url, None),
         Err(_) => {
             let container = Redis::default()
+                .with_tag("7-alpine")
                 .start()
                 .await
                 .expect("start redis testcontainer (is Docker running?)");
@@ -356,6 +358,35 @@ async fn durable_publish_and_replay_since_a_timestamp() {
     .await
     .unwrap();
     assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn replay_is_not_fooled_by_clock_skew_between_publisher_and_server() {
+    // An alert's `created_at` comes from the publisher's clock, the stream's
+    // own timestamps from the NATS server's. Simulate a publisher whose
+    // clock runs ahead of the server: its alerts carry future timestamps.
+    let n = test_nats().await;
+    let shard = uniq();
+    let subject = alert_subject(&shard);
+
+    let mut acked = alert_at(24.86, 67.00, "already-acked");
+    acked.created_at = Utc::now() + ChronoDuration::seconds(2);
+    let mut newer = alert_at(24.86, 67.00, "from-a-fast-clock");
+    newer.created_at = Utc::now() + ChronoDuration::seconds(10);
+    for alert in [&acked, &newer] {
+        infra::nats::publish_durable(&n.client, &subject, serde_json::to_vec(alert).unwrap())
+            .await
+            .unwrap();
+    }
+
+    // The device acknowledged "already-acked", so that is its cursor. Asking
+    // the server for "everything after the cursor" by server time alone
+    // would return nothing (the server thinks both are older than that).
+    let replayed = infra::nats::replay_alerts(&n.client, &shard, acked.created_at, 50)
+        .await
+        .unwrap();
+    let titles: Vec<&str> = replayed.iter().map(|a| a.title.as_str()).collect();
+    assert_eq!(titles, ["from-a-fast-clock"]);
 }
 
 #[tokio::test]

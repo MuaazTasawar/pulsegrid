@@ -22,12 +22,12 @@ async fn conn(pool: &Pool) -> Result<Connection, AppError> {
 }
 
 /// Runs a Lua script atomically on the server (plain EVAL, one key).
-async fn eval_i64(
+async fn eval<T: redis::FromRedisValue>(
     pool: &Pool,
     script: &str,
     key: String,
     args: &[String],
-) -> Result<i64, AppError> {
+) -> Result<T, AppError> {
     let mut c = conn(pool).await?;
     let mut cmd = redis::cmd("EVAL");
     cmd.arg(script).arg(1).arg(key);
@@ -196,7 +196,7 @@ impl ShardRegistry {
         worker_ws_url: &str,
         ttl_secs: u64,
     ) -> Result<bool, AppError> {
-        let won = eval_i64(
+        let won: i64 = eval(
             &self.pool,
             CLAIM_LUA,
             Self::key(shard_prefix),
@@ -212,7 +212,7 @@ impl ShardRegistry {
         shard_prefix: &str,
         worker_ws_url: &str,
     ) -> Result<bool, AppError> {
-        let deleted = eval_i64(
+        let deleted: i64 = eval(
             &self.pool,
             RELEASE_LUA,
             Self::key(shard_prefix),
@@ -292,13 +292,24 @@ impl DeviceLocationStore {
 // One-time WebSocket tickets.
 // ---------------------------------------------------------------------
 
+/// Reads and deletes the key in one atomic step. (GETDEL does the same but
+/// needs Redis 6.2+; this works on every Redis that supports scripting.)
+const CONSUME_LUA: &str = r#"
+local v = redis.call('GET', KEYS[1])
+if v then
+  redis.call('DEL', KEYS[1])
+end
+return v
+"#;
+
 fn is_ticket_shaped(ticket: &str) -> bool {
     ticket.len() == 64 && ticket.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Short-lived, single-use tickets that replace the long-lived JWT in the
 /// WebSocket URL. The coordinator issues one for an authenticated device;
-/// the worker consumes it atomically with GETDEL, so it can be used once.
+/// the worker consumes it atomically (read + delete in one Lua step), so it
+/// can be used once.
 #[derive(Clone)]
 pub struct WsTicketStore {
     pool: Pool,
@@ -332,12 +343,7 @@ impl WsTicketStore {
         if !is_ticket_shaped(ticket) {
             return Ok(None);
         }
-        let mut conn = conn(&self.pool).await?;
-        let raw: Option<String> = redis::cmd("GETDEL")
-            .arg(Self::key(ticket))
-            .query_async(&mut conn)
-            .await
-            .map_err(cache_err)?;
+        let raw: Option<String> = eval(&self.pool, CONSUME_LUA, Self::key(ticket), &[]).await?;
         Ok(raw.and_then(|s| Uuid::parse_str(&s).ok()))
     }
 }
@@ -513,7 +519,7 @@ impl AckCursorStore {
         ts: DateTime<Utc>,
         ttl_secs: u64,
     ) -> Result<bool, AppError> {
-        let moved = eval_i64(
+        let moved: i64 = eval(
             &self.pool,
             ADVANCE_LUA,
             Self::key(device_id),

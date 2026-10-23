@@ -24,8 +24,15 @@ pub use async_nats::Client;
 /// (stopping the NATS container mid-request) rather than assumed.
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Upper bound on how many alerts one replay request may fetch.
+/// Upper bound on how many stored alerts one replay request reads.
 const MAX_REPLAY_FETCH: usize = 500;
+
+/// A replay reads the stream this far before the cursor. The cursor is an
+/// alert's `created_at` (the publisher's clock) while the stream orders
+/// messages by the NATS server's clock; the two machines can disagree, and
+/// without this margin an alert could be skipped. The exact cut is made
+/// afterwards on the alerts' own `created_at`.
+const REPLAY_CLOCK_SKEW_TOLERANCE_SECS: i64 = 60;
 
 fn msg_err<E: std::fmt::Display>(e: E) -> AppError {
     AppError::Messaging(e.to_string())
@@ -143,10 +150,13 @@ pub async fn publish_durable(
         })?
 }
 
-/// Reads the alerts stored for one shard since `since` (oldest first, at
-/// most `max`). Uses a short-lived ephemeral consumer that is deleted
-/// again afterwards. The caller is responsible for filtering by the
-/// device's own cursor and location.
+/// Returns the stored alerts for one shard created strictly after `since`
+/// (oldest first, at most `max`). `since` is compared with each alert's own
+/// `created_at`, so it is exact even when the publisher and the NATS server
+/// disagree about the time by up to a minute (see
+/// `REPLAY_CLOCK_SKEW_TOLERANCE_SECS`). Uses a short-lived ephemeral consumer
+/// that is deleted again afterwards. The caller still filters by the
+/// device's location.
 pub async fn replay_alerts(
     client: &Client,
     shard_prefix: &str,
@@ -157,7 +167,8 @@ pub async fn replay_alerts(
     let js = jetstream::new(client.clone());
     let stream = js.get_stream(ALERT_STREAM_NAME).await.map_err(msg_err)?;
 
-    let start_nanos = since.timestamp_nanos_opt().unwrap_or(0).max(0) as i128;
+    let server_start = since - chrono::Duration::seconds(REPLAY_CLOCK_SKEW_TOLERANCE_SECS);
+    let start_nanos = server_start.timestamp_nanos_opt().unwrap_or(0).max(0) as i128;
     let start_time =
         time::OffsetDateTime::from_unix_timestamp_nanos(start_nanos).map_err(msg_err)?;
 
@@ -177,7 +188,7 @@ pub async fn replay_alerts(
     let mut alerts = Vec::new();
     let mut batch = consumer
         .fetch()
-        .max_messages(max)
+        .max_messages(MAX_REPLAY_FETCH)
         .expires(Duration::from_millis(750))
         .messages()
         .await
@@ -185,7 +196,8 @@ pub async fn replay_alerts(
     while let Some(message) = batch.next().await {
         let message = message.map_err(msg_err)?;
         match serde_json::from_slice::<Alert>(&message.payload) {
-            Ok(alert) => alerts.push(alert),
+            Ok(alert) if alert.created_at > since => alerts.push(alert),
+            Ok(_) => {} // created at or before the cursor: already seen
             Err(e) => tracing::warn!(error = %e, "skipping unparseable stored alert"),
         }
     }
@@ -193,6 +205,7 @@ pub async fn replay_alerts(
 
     // Best effort: the consumer would also expire by itself.
     let _ = stream.delete_consumer(&consumer_name).await;
+    alerts.truncate(max);
     Ok(alerts)
 }
 
