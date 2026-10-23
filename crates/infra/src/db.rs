@@ -30,12 +30,13 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
 
 /// Cheap liveness probe used by the readiness endpoints (2 s budget).
 pub async fn ping(pool: &PgPool) -> Result<(), AppError> {
-    match tokio::time::timeout(
-        Duration::from_secs(2),
-        sqlx::query("SELECT 1").execute(pool),
-    )
-    .await
-    {
+    ping_with_timeout(pool, Duration::from_secs(2)).await
+}
+
+/// Like `ping`, with a caller-chosen budget (tests on a loaded machine
+/// use a generous one).
+pub async fn ping_with_timeout(pool: &PgPool, timeout: Duration) -> Result<(), AppError> {
+    match tokio::time::timeout(timeout, sqlx::query("SELECT 1").execute(pool)).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(db_err(e)),
         Err(_) => Err(AppError::Database("postgres ping timed out".into())),

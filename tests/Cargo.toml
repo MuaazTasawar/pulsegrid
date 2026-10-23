@@ -10,11 +10,14 @@ infra = { path = "../crates/infra" }
 tokio = { version = "1", features = ["full", "test-util"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
+serde_json = "1"
+futures-util = "0.3"
+async-nats = "0.50"
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres"] }
 
 [dev-dependencies]
 testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["postgres"] }
+testcontainers-modules = { version = "0.11", features = ["postgres", "redis", "nats"] }
 
 [[test]]
 name = "alert_dispatch_test"
@@ -23,3 +26,7 @@ path = "alert_dispatch_test.rs"
 [[test]]
 name = "db_lifecycle_test"
 path = "db_lifecycle_test.rs"
+
+[[test]]
+name = "redis_nats_test"
+path = "redis_nats_test.rs"

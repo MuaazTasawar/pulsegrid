@@ -54,7 +54,7 @@ async fn test_db() -> TestDb {
                 .await
                 .expect("mapped postgres port");
             (
-                format!("postgres://postgres:postgres@localhost:{port}/postgres"),
+                format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
                 Some(container),
             )
         }
@@ -302,5 +302,7 @@ async fn alert_audit_trail_is_idempotent_and_retention_cascades() {
 #[tokio::test]
 async fn ping_succeeds_against_a_live_database() {
     let db = test_db().await;
-    infra::db::ping(&db.pool).await.unwrap();
+    infra::db::ping_with_timeout(&db.pool, std::time::Duration::from_secs(30))
+        .await
+        .unwrap();
 }

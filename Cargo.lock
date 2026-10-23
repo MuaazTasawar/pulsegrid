@@ -1841,9 +1841,12 @@ dependencies = [
 name = "integration-tests"
 version = "0.1.0"
 dependencies = [
+ "async-nats",
  "chrono",
  "domain",
+ "futures-util",
  "infra",
+ "serde_json",
  "sqlx",
  "testcontainers",
  "testcontainers-modules",
