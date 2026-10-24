@@ -1,31 +1,29 @@
-use axum::routing::{post, put};
+use axum::routing::{delete, post, put};
 use axum::Router;
-use std::sync::Arc;
-use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::GovernorLayer;
 
-use crate::handlers::devices::{register, update_location};
+use crate::config::RateLimits;
+use crate::handlers::devices::{delete_me, heartbeat, register, update_location, ws_ticket};
+use crate::middleware::rate_limit::with_limit;
 use crate::AppState;
 
-pub fn router() -> Router<AppState> {
-    // 5 registrations per second per client IP, burst of 10 -- generous
-    // enough for legitimate retry/reconnect behavior, tight enough to
-    // blunt a naive registration-spam attack. Only /register is limited;
-    // /location updates from already-authenticated devices are not
-    // rate-limited here since JWT auth already gates that endpoint.
-    let governor_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(5)
-            .burst_size(10)
-            .finish()
-            .expect("valid governor config"),
+/// Device endpoints. Registration is limited per client address (anyone can
+/// call it); the authenticated endpoints get their own, more generous limit.
+pub fn router(limits: &RateLimits) -> Router<AppState> {
+    let register_route = with_limit(
+        Router::new().route("/devices/register", post(register)),
+        limits.register,
+        limits,
     );
 
-    let register_route = Router::new()
-        .route("/devices/register", post(register))
-        .layer(GovernorLayer::new(governor_config));
+    let authenticated = with_limit(
+        Router::new()
+            .route("/devices/location", put(update_location))
+            .route("/devices/heartbeat", post(heartbeat))
+            .route("/devices/ws-ticket", post(ws_ticket))
+            .route("/devices/me", delete(delete_me)),
+        limits.location,
+        limits,
+    );
 
-    let location_route = Router::new().route("/devices/location", put(update_location));
-
-    register_route.merge(location_route)
+    register_route.merge(authenticated)
 }

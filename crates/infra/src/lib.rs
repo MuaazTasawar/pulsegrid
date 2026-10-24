@@ -8,3 +8,4 @@ pub use redis::{
     AckCursorStore, AlertStatsStore, DeviceLocationStore, PresenceRegistry, RevocationStore,
     ShardRegistry, WsTicketStore,
 };
+pub use sqlx::PgPool;

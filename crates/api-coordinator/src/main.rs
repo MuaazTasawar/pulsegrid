@@ -1,80 +1,23 @@
-mod config;
-mod errors;
-mod extractors;
-mod handlers;
-mod middleware;
-mod routes;
-mod services;
-
-use axum::routing::get;
-use axum::Router;
-use tokio::signal;
-use tower::ServiceBuilder;
-use tower_http::trace::TraceLayer;
-
-use config::Config;
-use services::alert_dispatch_service::AlertDispatchService;
-use services::device_service::DeviceService;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub device_service: DeviceService,
-    pub alert_dispatch_service: AlertDispatchService,
-    pub shard_registry: infra::ShardRegistry,
-    pub jwt_secret: String,
-}
+use api_coordinator::{
+    build_router, build_state, init_tracing, install_crypto_provider, shutdown_signal, Config,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
-
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("failed to install rustls crypto provider");
-
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let config = Config::from_env()?;
+    init_tracing(config.log_json);
+    install_crypto_provider();
 
-    let pool = infra::db::connect(&config.database_url).await?;
-    infra::db::run_migrations(&pool).await?;
-    tracing::info!("database connected and migrated");
+    tracing::info!(environment = ?config.environment, "starting api-coordinator");
+    if config.operator_keys.is_empty() {
+        tracing::warn!("OPERATOR_API_KEYS is empty: POST /alerts will reject every request");
+    }
+    if config.rate_limits.disabled {
+        tracing::warn!("rate limiting is DISABLED (RATE_LIMIT_DISABLED=true)");
+    }
 
-    let nats = infra::nats::connect(&config.nats_url).await?;
-    tracing::info!("nats connected");
-
-    let redis_pool = infra::redis::build_pool(&config.redis_url)?;
-    let shard_registry = infra::ShardRegistry::new(redis_pool);
-
-    let device_repo = infra::DeviceRepository::new(pool.clone());
-    let alert_repo = infra::AlertRepository::new(pool);
-
-    let device_service = DeviceService::new(device_repo.clone(), config.jwt_secret.clone());
-    let alert_dispatch_service = AlertDispatchService::new(alert_repo, device_repo, nats);
-
-    let state = AppState {
-        device_service,
-        alert_dispatch_service,
-        shard_registry,
-        jwt_secret: config.jwt_secret.clone(),
-    };
-
-    let app = Router::new()
-        .merge(routes::devices::router())
-        .merge(routes::alerts::router())
-        .route("/health", get(|| async { "ok" }))
-        .route("/ready", get(|| async { "ready" }))
-        .route("/metrics", get(|| async {
-            "# HELP pulsegrid_coordinator_up Coordinator process is running\n# TYPE pulsegrid_coordinator_up gauge\npulsegrid_coordinator_up 1\n"
-        }))
-        .layer(
-            ServiceBuilder::new()
-                .layer(axum::middleware::from_fn(middleware::request_id::request_id_middleware))
-                .layer(TraceLayer::new_for_http()),
-        )
-        .with_state(state);
+    let state = build_state(&config).await?;
+    let app = build_router(state, &config.rate_limits);
 
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -88,28 +31,4 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
-
-    tracing::info!("shutdown signal received, draining connections");
 }
