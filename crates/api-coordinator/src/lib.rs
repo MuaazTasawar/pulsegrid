@@ -21,13 +21,16 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 pub use config::Config;
 use config::{JwtConfig, RateLimits};
 use metrics::Metrics;
-use services::alert_dispatch_service::AlertDispatchService;
+use services::alert_dispatch_service::{AlertDispatchService, JetStreamPublisher};
 use services::device_service::{DeviceService, DeviceServiceParts};
+use services::retention_service::RetentionService;
+use tokio::task::JoinHandle;
 
 #[derive(Clone)]
 pub struct AppState {
     pub device_service: DeviceService,
     pub alert_dispatch_service: AlertDispatchService,
+    pub retention: RetentionService,
     pub shard_registry: infra::ShardRegistry,
     pub revocation_store: infra::RevocationStore,
     pub verifier: TokenVerifier,
@@ -97,6 +100,12 @@ pub async fn build_state(config: &Config) -> Result<AppState, AppError> {
 
     let nats = infra::nats::connect(&config.nats_url).await?;
     tracing::info!("nats connected");
+    infra::nats::ensure_alert_stream(&nats, Duration::from_secs(config.alert_stream_max_age_secs))
+        .await?;
+    tracing::info!(
+        max_age_secs = config.alert_stream_max_age_secs,
+        "alert stream ready"
+    );
 
     let redis = infra::redis::build_pool(&config.redis_url)?;
     infra::redis::ping_with_timeout(&redis, Duration::from_secs(5)).await?;
@@ -122,11 +131,26 @@ pub async fn build_state(config: &Config) -> Result<AppState, AppError> {
         revocation_ttl_secs: config.token_ttl_hours as u64 * 3_600 + 86_400,
         ws_ticket_ttl_secs: config.ws_ticket_ttl_secs,
     });
-    let alert_dispatch_service = AlertDispatchService::new(alert_repo, device_repo, nats.clone());
+    let metrics = Metrics::new();
+    let alert_dispatch_service = AlertDispatchService::new(
+        alert_repo.clone(),
+        device_repo.clone(),
+        infra::AlertStatsStore::new(redis.clone()),
+        Arc::new(JetStreamPublisher::new(nats.clone())),
+        metrics.clone(),
+    );
+    let retention = RetentionService::new(
+        device_repo,
+        alert_repo,
+        config.device_retention_days,
+        config.alert_retention_days,
+        metrics.clone(),
+    );
 
     Ok(AppState {
         device_service,
         alert_dispatch_service,
+        retention,
         shard_registry,
         revocation_store,
         verifier,
@@ -134,8 +158,16 @@ pub async fn build_state(config: &Config) -> Result<AppState, AppError> {
         pool,
         redis,
         nats,
-        metrics: Metrics::new(),
+        metrics,
     })
+}
+
+/// Starts the long-running background jobs (the retention sweep). Tests that
+/// build the state skip this on purpose.
+pub fn start_background_tasks(state: &AppState, config: &Config) -> Vec<JoinHandle<()>> {
+    vec![state.retention.clone().spawn(Duration::from_secs(
+        config.retention_sweep_interval_minutes * 60,
+    ))]
 }
 
 /// Request-id, tracing and metrics layers shared by the real router and the
@@ -170,6 +202,7 @@ pub fn build_router(state: AppState, limits: &RateLimits) -> Router {
     let router = Router::new()
         .merge(routes::devices::router(limits))
         .merge(routes::alerts::router(&state, limits))
+        .merge(routes::admin::router(&state, limits))
         .route("/health", get(handlers::ops::health))
         .route("/ready", get(handlers::ops::ready))
         .route("/metrics", get(handlers::ops::metrics));

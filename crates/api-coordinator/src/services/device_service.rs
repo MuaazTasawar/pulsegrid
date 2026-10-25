@@ -172,6 +172,19 @@ impl DeviceService {
         })
     }
 
+    /// Operator action: the device's token stops working at once and any live
+    /// socket is told to close, but the device record is kept.
+    pub async fn revoke(&self, device_id: Uuid) -> Result<(), AppError> {
+        // Check the device exists, so a typo cannot fill the revocation list.
+        self.p.repo.find_by_id(DeviceId(device_id)).await?;
+        self.p
+            .revocations
+            .revoke(device_id, self.p.revocation_ttl_secs)
+            .await?;
+        self.notify_device(device_id, &ServerMessage::Revoked).await;
+        Ok(())
+    }
+
     /// Deregisters the device: its token stops working at once, its data is
     /// deleted, and any live socket is told to close.
     pub async fn delete(&self, device_id: Uuid) -> Result<(), AppError> {

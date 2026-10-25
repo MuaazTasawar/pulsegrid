@@ -1,5 +1,6 @@
 use api_coordinator::{
-    build_router, build_state, init_tracing, install_crypto_provider, shutdown_signal, Config,
+    build_router, build_state, init_tracing, install_crypto_provider, shutdown_signal,
+    start_background_tasks, Config,
 };
 
 #[tokio::main]
@@ -17,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = build_state(&config).await?;
+    let _background_tasks = start_background_tasks(&state, &config);
     let app = build_router(state, &config.rate_limits);
 
     let addr = format!("0.0.0.0:{}", config.port);

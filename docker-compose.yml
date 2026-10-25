@@ -17,8 +17,12 @@ services:
 
   nats:
     image: nats:2-alpine
+    # -js turns on JetStream (durable, replayable alerts); -sd is its storage.
+    command: ["-js", "-sd", "/data"]
     ports:
       - "4222:4222"
+    volumes:
+      - natsdata:/data
 
   api-coordinator:
     build: .
@@ -44,3 +48,4 @@ services:
 
 volumes:
   pgdata:
+  natsdata:
