@@ -393,7 +393,7 @@ impl AlertRepository {
             r#"
             INSERT INTO alert_deliveries
                 (id, alert_id, shard_prefix, published_at, devices_in_shard, devices_in_radius)
-            VALUES ($1, $2, $3, now(), $4, $5)
+            VALUES ($1, $2, $3, $6, $4, $5)
             ON CONFLICT (alert_id, shard_prefix) DO NOTHING
             "#,
         )
@@ -402,6 +402,7 @@ impl AlertRepository {
         .bind(shard_prefix)
         .bind(counts.in_shard as i32)
         .bind(counts.in_radius as i32)
+        .bind(Utc::now())
         .execute(&self.pool)
         .await
         .map_err(db_err)?;

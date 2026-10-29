@@ -50,6 +50,10 @@ pub enum ServerMessage {
     },
     /// The device's access was revoked or the device was deregistered.
     Revoked,
+    /// The device moved but is still in the same shard. The worker applies
+    /// this to its own record of where the device is (so alerts are filtered
+    /// by its real position) and does NOT forward it to the device.
+    LocationUpdated { lat: f64, lon: f64 },
     /// Sent once after a reconnect replay finished.
     ReplayComplete { replayed: usize },
 }
@@ -116,6 +120,19 @@ mod tests {
         assert_eq!(v["type"], "shard_changed");
         assert_eq!(v["shard_prefix"], "tkrw");
         assert_eq!(ServerMessage::Revoked.to_json(), r#"{"type":"revoked"}"#);
+        let back: ServerMessage = serde_json::from_str(&m.to_json()).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn location_updated_json_shape() {
+        let m = ServerMessage::LocationUpdated {
+            lat: 24.9,
+            lon: 67.1,
+        };
+        let v: serde_json::Value = serde_json::from_str(&m.to_json()).unwrap();
+        assert_eq!(v["type"], "location_updated");
+        assert_eq!(v["lat"], 24.9);
         let back: ServerMessage = serde_json::from_str(&m.to_json()).unwrap();
         assert_eq!(back, m);
     }

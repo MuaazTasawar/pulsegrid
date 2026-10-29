@@ -100,8 +100,8 @@ impl DeviceService {
     ) -> Result<LocationUpdate, AppError> {
         let mut device = self.p.repo.find_by_id(DeviceId(device_id)).await?;
         let new_location = Location::new(lat, lon)?;
-        let shard_changed =
-            new_location != device.location && device.update_location(new_location)?;
+        let moved = new_location != device.location;
+        let shard_changed = moved && device.update_location(new_location)?;
         self.p
             .repo
             .update_location(
@@ -126,6 +126,17 @@ impl DeviceService {
                 &ServerMessage::ShardChanged {
                     shard_prefix: device.shard_prefix.clone(),
                     ws_url: ws_url.clone(),
+                },
+            )
+            .await;
+        } else if moved {
+            // Same shard, new spot: the worker holding the socket needs the new
+            // position so it filters alerts by where the device really is.
+            self.notify_device(
+                device_id,
+                &ServerMessage::LocationUpdated {
+                    lat: new_location.lat,
+                    lon: new_location.lon,
                 },
             )
             .await;

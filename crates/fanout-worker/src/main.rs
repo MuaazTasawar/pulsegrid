@@ -1,133 +1,73 @@
-mod config;
-mod connection_registry;
-mod subscriber;
-mod ws;
+use std::future::IntoFuture;
+use std::net::SocketAddr;
+use std::time::Duration;
 
-use axum::routing::get;
-use axum::Router;
-use tokio::signal;
+use fanout_worker::{
+    build_router, build_state, init_tracing, install_crypto_provider, shutdown_signal,
+    start_background_tasks, Config,
+};
 
-use config::Config;
-use connection_registry::ConnectionRegistry;
-use infra::PresenceRegistry;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub registry: ConnectionRegistry,
-    pub presence: PresenceRegistry,
-    pub owned_prefixes: Vec<String>,
-    pub instance_id: String,
-    pub jwt_secret: String,
-}
+/// After a shutdown signal, open WebSockets are closed and we wait this long
+/// for the server to finish before giving up.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
-
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("failed to install rustls crypto provider");
-
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let config = Config::from_env()?;
-    tracing::info!(instance_id = %config.instance_id, owned_prefixes = ?config.owned_prefixes, "starting fanout-worker");
+    init_tracing(config.log_json);
+    install_crypto_provider();
 
-    let redis_pool = infra::redis::build_pool(&config.redis_url)?;
-    let presence = PresenceRegistry::new(redis_pool.clone());
-    let shard_registry = infra::ShardRegistry::new(redis_pool);
-
-    let nats = infra::nats::connect(&config.nats_url).await?;
-    tracing::info!("nats connected");
-
-    // Advertise which shards this instance owns, so api-coordinator can
-    // tell clients where to connect. WORKER_PUBLIC_URL lets a real
-    // deployment advertise its actual reachable address (behind a load
-    // balancer, a different hostname, etc.) instead of always assuming
-    // localhost.
-    let public_url = std::env::var("WORKER_PUBLIC_URL")
-        .unwrap_or_else(|_| format!("ws://localhost:{}", config.port));
-    for prefix in &config.owned_prefixes {
-        if let Err(e) = shard_registry.register_shard(prefix, &public_url).await {
-            tracing::warn!(shard = %prefix, error = ?e, "failed to register shard in service discovery");
-        }
+    tracing::info!(
+        instance_id = %config.instance_id,
+        shards = ?config.owned_prefixes,
+        "starting fanout-worker"
+    );
+    if config.operator_keys.is_empty() {
+        tracing::warn!("OPERATOR_API_KEYS is empty: /admin endpoints will reject every request");
+    }
+    if config.rate_limit_disabled {
+        tracing::warn!("rate limiting is DISABLED (RATE_LIMIT_DISABLED=true)");
     }
 
-    let registry = ConnectionRegistry::new();
-    subscriber::spawn_shard_subscribers(nats, registry.clone(), config.owned_prefixes.clone());
-
-    let state = AppState {
-        registry,
-        presence,
-        owned_prefixes: config.owned_prefixes.clone(),
-        instance_id: config.instance_id.clone(),
-        jwt_secret: config.jwt_secret.clone(),
-    };
-
-    let app = Router::new()
-        .route("/connect/{device_id}", get(ws::ws_upgrade_handler))
-        .route("/health", get(|| async { "ok" }))
-        .route("/ready", get(|| async { "ready" }))
-        .route(
-            "/admin/presence/{device_id}",
-            get(admin_presence_lookup),
-        )
-        .route("/metrics", get(metrics_handler))
-        .with_state(state);
-
+    // Listen before claiming the shards, so a client that learns about this
+    // worker the moment the lease appears can already connect.
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    let state = build_state(config).await?;
+    let tasks = start_background_tasks(&state);
     tracing::info!(%addr, "fanout-worker listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
-    Ok(())
-}
-
-async fn admin_presence_lookup(
-    axum::extract::Path(device_id): axum::extract::Path<String>,
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> impl axum::response::IntoResponse {
-    match state.presence.lookup(&device_id).await {
-        Ok(Some(worker_id)) => (axum::http::StatusCode::OK, worker_id),
-        Ok(None) => (axum::http::StatusCode::NOT_FOUND, "no presence record".to_string()),
-        Err(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "lookup failed".to_string()),
-    }
-}
-
-async fn metrics_handler(axum::extract::State(state): axum::extract::State<AppState>) -> String {
-    format!(
-        "# HELP pulsegrid_ws_connections_current Current WebSocket connections held by this worker\n\
-         # TYPE pulsegrid_ws_connections_current gauge\n\
-         pulsegrid_ws_connections_current {}\n",
-        state.registry.connection_count()
+    let app = build_router(state.clone());
+    let closing = state.clone();
+    let (signalled_tx, signalled_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-}
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // Open WebSockets would keep a graceful shutdown waiting forever.
+        closing.registry.close_all();
+        let _ = signalled_tx.send(());
+    })
+    .into_future();
+    tokio::pin!(server);
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    // The grace period starts when the shutdown signal arrives, not before.
+    let grace = async move {
+        let _ = signalled_rx.await;
+        tokio::time::sleep(SHUTDOWN_GRACE).await;
     };
-
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        result = &mut server => result?,
+        _ = grace => tracing::warn!("shutdown grace period elapsed; exiting anyway"),
     }
 
-    tracing::info!("shutdown signal received, draining connections");
+    for task in tasks {
+        task.abort();
+    }
+    state.lease.release_all().await;
+    tracing::info!("shard leases released; bye");
+    Ok(())
 }

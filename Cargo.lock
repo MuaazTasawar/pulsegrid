@@ -1043,6 +1043,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "tower_governor",
  "tracing",
  "tracing-subscriber",
