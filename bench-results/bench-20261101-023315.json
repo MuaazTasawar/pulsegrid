@@ -1,0 +1,47 @@
+{
+    "taken_at":  "2026-11-01T02:33:15.2060116+05:00",
+    "machine":  {
+                    "cpu":  "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
+                    "cores":  2,
+                    "logical_threads":  4,
+                    "ram_gb":  15.9,
+                    "note":  "loadgen, Docker, databases and the desktop share these CPUs; workers are limited to 1 CPU each"
+                },
+    "result":  {
+                   "alerts_failed":  0,
+                   "alerts_measured":  30,
+                   "deliveries_per_sec":  1011.6880318317523,
+                   "delivery_latency_ms":  {
+                                               "max":  270.591,
+                                               "mean":  37.47696653333337,
+                                               "p50":  28.383,
+                                               "p90":  66.495,
+                                               "p99":  203.647,
+                                               "p99_9":  269.311,
+                                               "samples":  15000
+                                           },
+                   "delivery_ratio":  1.0,
+                   "devices_connected":  500,
+                   "devices_failed":  0,
+                   "devices_per_worker":  {
+                                              "ws://localhost:8081":  244,
+                                              "ws://localhost:8082":  256
+                                          },
+                   "devices_requested":  500,
+                   "duplicate_deliveries":  0,
+                   "expected_deliveries":  15000,
+                   "interval_ms":  500,
+                   "post_alerts_ms":  {
+                                          "max":  400.895,
+                                          "mean":  71.86426666666667,
+                                          "p50":  45.951,
+                                          "p90":  113.407,
+                                          "p99":  400.895,
+                                          "p99_9":  400.895,
+                                          "samples":  30
+                                      },
+                   "unique_deliveries":  15000,
+                   "warmup_alerts":  3,
+                   "window_secs":  14.826705
+               }
+}

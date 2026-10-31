@@ -1,0 +1,69 @@
+# Scale harness: one coordinator and TWO fanout-workers on disjoint shard
+# prefixes, each with a CPU limit, on top of the base docker-compose.yml
+# (which provides postgres, redis and nats).
+#
+# Use it through scripts/bench.ps1, or by hand:
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --build \
+#       postgres redis nats api-coordinator worker-a worker-b
+#
+# Do NOT start the base `fanout-worker` service next to these, and stop any
+# workers/coordinator you run natively (cargo run): ports and shard leases clash.
+#
+# Secrets (JWT_SECRET, OPERATOR_API_KEYS) come from .env as in the base file;
+# the connection URLs below point at the compose service names instead of
+# localhost. Rate limits are switched off because one load generator on one
+# IP would otherwise be throttled; never do that outside a benchmark.
+
+x-worker-env: &worker-env
+  PULSEGRID_ENV: development
+  DATABASE_URL: postgres://pulsegrid:pulsegrid@postgres:5432/pulsegrid
+  REDIS_URL: redis://redis:6379
+  NATS_URL: nats://nats:4222
+  RATE_LIMIT_DISABLED: "true"
+  # Per-IP WebSocket connect limit of the worker (one load generator = one IP).
+  WS_CONNECT_RATE_PER_SEC: "1000"
+  WS_CONNECT_RATE_BURST: "1000"
+
+services:
+  api-coordinator:
+    cpus: 1.0
+    environment:
+      PULSEGRID_ENV: development
+      DATABASE_URL: postgres://pulsegrid:pulsegrid@postgres:5432/pulsegrid
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      RATE_LIMIT_DISABLED: "true"
+
+  worker-a:
+    build: .
+    command: fanout-worker
+    env_file: .env
+    cpus: 1.0
+    environment:
+      <<: *worker-env
+      FANOUT_WORKER_PORT: "8081"
+      FANOUT_WORKER_SHARD_PREFIXES: "tkrt,tkrw"
+      WORKER_PUBLIC_URL: ws://localhost:8081
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+      - redis
+      - nats
+
+  worker-b:
+    build: .
+    command: fanout-worker
+    env_file: .env
+    cpus: 1.0
+    environment:
+      <<: *worker-env
+      FANOUT_WORKER_PORT: "8082"
+      FANOUT_WORKER_SHARD_PREFIXES: "tkrs,tkrv"
+      WORKER_PUBLIC_URL: ws://localhost:8082
+    ports:
+      - "8082:8082"
+    depends_on:
+      - postgres
+      - redis
+      - nats
