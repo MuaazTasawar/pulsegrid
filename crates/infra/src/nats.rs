@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_nats::jetstream::consumer::{pull, AckPolicy, DeliverPolicy};
 use async_nats::jetstream::stream::{Config as StreamConfig, DiscardPolicy, StorageType};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use domain::protocol::{
     alert_subject, control_subject, ALERT_STREAM_NAME, ALERT_SUBJECT_WILDCARD,
     TELEMETRY_DELIVERY_SUBJECT,
@@ -196,7 +196,9 @@ pub async fn replay_alerts(
     while let Some(message) = batch.next().await {
         let message = message.map_err(msg_err)?;
         match serde_json::from_slice::<Alert>(&message.payload) {
-            Ok(alert) if alert.created_at > since => alerts.push(alert),
+            Ok(alert) if alert.created_at.trunc_subsecs(6) > since.trunc_subsecs(6) => {
+                alerts.push(alert)
+            }
             Ok(_) => {} // created at or before the cursor: already seen
             Err(e) => tracing::warn!(error = %e, "skipping unparseable stored alert"),
         }

@@ -179,6 +179,18 @@ impl ConnectionRegistry {
         true
     }
 
+    /// A sender for the connection identified by `conn_id`, for tasks that
+    /// need to write to it from outside its writer task (the replay task
+    /// waits for room instead of dropping messages). None if that connection
+    /// has since gone away or been replaced.
+    pub fn sender_for(&self, device_id: &Uuid, conn_id: u64) -> Option<mpsc::Sender<Outbound>> {
+        self.inner
+            .by_device
+            .get(device_id)
+            .filter(|c| c.id == conn_id)
+            .map(|c| c.sender.clone())
+    }
+
     /// Closes every connection (used when the worker shuts down).
     pub fn close_all(&self) {
         for entry in self.inner.by_device.iter() {

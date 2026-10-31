@@ -5,6 +5,7 @@ pub mod lease;
 pub mod metrics;
 pub mod ops;
 pub mod rate_limit;
+pub mod replay;
 pub mod subscriber;
 pub mod ws;
 
@@ -23,6 +24,7 @@ pub use config::Config;
 use connection_registry::ConnectionRegistry;
 use lease::ShardLease;
 use metrics::WorkerMetrics;
+use replay::ReplayMetrics;
 
 /// Tracks how many shard subscriptions are live (for `/ready`).
 pub struct Health {
@@ -49,12 +51,14 @@ pub struct WorkerState {
     pub revocations: infra::RevocationStore,
     pub presence: infra::PresenceRegistry,
     pub stats: infra::AlertStatsStore,
+    pub ack_cursors: infra::AckCursorStore,
     pub shards: infra::ShardRegistry,
     pub redis: infra::redis::Pool,
     pub nats: infra::nats::Client,
     pub lease: ShardLease,
     pub health: Arc<Health>,
     pub metrics: Arc<WorkerMetrics>,
+    pub replay_metrics: Arc<ReplayMetrics>,
     /// The shard prefixes this worker owns.
     pub owned: Arc<HashSet<String>>,
 }
@@ -110,6 +114,9 @@ pub async fn build_state(config: Config) -> Result<WorkerState, AppError> {
     let expected_subscriptions = config.owned_prefixes.len();
     let owned: HashSet<String> = config.owned_prefixes.iter().cloned().collect();
 
+    let metrics = WorkerMetrics::new();
+    let replay_metrics = ReplayMetrics::new(&metrics.registry);
+
     Ok(WorkerState {
         registry: ConnectionRegistry::new(),
         tickets: infra::WsTicketStore::new(redis.clone()),
@@ -117,6 +124,7 @@ pub async fn build_state(config: Config) -> Result<WorkerState, AppError> {
         revocations: infra::RevocationStore::new(redis.clone()),
         presence: infra::PresenceRegistry::new(redis.clone()),
         stats: infra::AlertStatsStore::new(redis.clone()),
+        ack_cursors: infra::AckCursorStore::new(redis.clone()),
         shards,
         redis,
         nats,
@@ -125,7 +133,8 @@ pub async fn build_state(config: Config) -> Result<WorkerState, AppError> {
             subscriptions_up: AtomicUsize::new(0),
             expected_subscriptions,
         }),
-        metrics: WorkerMetrics::new(),
+        metrics,
+        replay_metrics,
         owned: Arc::new(owned),
         config: Arc::new(config),
     })

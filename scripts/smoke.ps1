@@ -83,7 +83,7 @@ try {
     $pushed = $text | ConvertFrom-Json
     if ($pushed.id -ne $alert.alert_id) { Fail "received a different alert ($($pushed.id))" }
     $elapsed = [int]([DateTime]::UtcNow - $sent).TotalMilliseconds
-    Write-Host "   received '$($pushed.title)' (severity: $($pushed.severity)) $elapsed ms after sending" -ForegroundColor Green
+    Write-Host "   received '$($pushed.title)' (severity: $($pushed.severity)); $elapsed ms since the request was sent, including the HTTP call" -ForegroundColor Green
 
     Start-Sleep -Milliseconds 800
     $details = Invoke-RestMethod "$Coordinator/alerts/$($alert.alert_id)" -Headers @{ 'X-API-Key' = $operatorKey }

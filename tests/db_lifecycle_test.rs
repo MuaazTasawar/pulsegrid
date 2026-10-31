@@ -60,11 +60,27 @@ async fn test_db() -> TestDb {
         }
     };
 
-    let pool = infra::db::connect(&url).await.expect("connect");
+    let pool = connect_with_retry(&url).await;
     infra::db::run_migrations(&pool).await.expect("migrate");
     TestDb {
         pool,
         _container: container,
+    }
+}
+
+/// A freshly started container can take a while to accept connections on a
+/// busy machine. Production code keeps its short connect timeout; tests wait.
+async fn connect_with_retry(url: &str) -> PgPool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        match infra::db::connect(url).await {
+            Ok(pool) => return pool,
+            Err(e) if std::time::Instant::now() < deadline => {
+                eprintln!("postgres is not accepting connections yet ({e}); retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            Err(e) => panic!("could not connect to postgres within 90 s: {e}"),
+        }
     }
 }
 

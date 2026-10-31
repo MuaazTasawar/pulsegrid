@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -8,7 +8,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use domain::device::Location;
+use domain::ClientMessage;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -16,6 +18,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::connection_registry::{Outbound, Registered};
+use crate::replay::{self, AckBatcher, AckOutcome};
 use crate::WorkerState;
 
 /// A WebSocket protocol ping is sent this often to find dead connections.
@@ -223,6 +226,45 @@ async fn send(sink: &mut SplitSink<WebSocket, Message>, message: Message) -> boo
     )
 }
 
+async fn write_cursor(state: &WorkerState, device_id: Uuid, cursor: DateTime<Utc>) {
+    if let Err(e) = state
+        .ack_cursors
+        .advance(device_id, cursor, replay::ACK_CURSOR_TTL_SECS)
+        .await
+    {
+        tracing::warn!(%device_id, error = ?e, "could not store the replay cursor");
+    }
+}
+
+/// Handles a text frame from the device. The only message it understands is
+/// an acknowledgement; anything else is counted and ignored.
+async fn on_client_text(
+    state: &WorkerState,
+    device_id: Uuid,
+    batcher: &Mutex<AckBatcher>,
+    text: &str,
+) {
+    let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
+        state.replay_metrics.bad_messages.inc();
+        return;
+    };
+    let ClientMessage::Ack { created_at, .. } = message;
+
+    let outcome = batcher.lock().unwrap_or_else(|e| e.into_inner()).offer(
+        created_at,
+        Utc::now(),
+        Instant::now(),
+    );
+    match outcome {
+        AckOutcome::Ignored => state.replay_metrics.acks_ignored.inc(),
+        AckOutcome::Buffered => state.replay_metrics.acks.inc(),
+        AckOutcome::Write(cursor) => {
+            state.replay_metrics.acks.inc();
+            write_cursor(state, device_id, cursor).await;
+        }
+    }
+}
+
 async fn handle_socket(socket: WebSocket, state: WorkerState, device_id: Uuid, auth: Authorized) {
     let (sink, mut stream) = socket.split();
     let Registered {
@@ -231,6 +273,7 @@ async fn handle_socket(socket: WebSocket, state: WorkerState, device_id: Uuid, a
     } = state
         .registry
         .register(device_id, &auth.shard_prefix, auth.location);
+    let connected_at = Utc::now();
     state.metrics.connects.inc();
     state.metrics.connections.inc();
 
@@ -249,7 +292,23 @@ async fn handle_socket(socket: WebSocket, state: WorkerState, device_id: Uuid, a
         "device connected"
     );
 
+    // Send the alerts the device missed while it was away.
+    let replay_task = state
+        .registry
+        .sender_for(&device_id, conn_id)
+        .map(|sender| {
+            tokio::spawn(replay::run_replay(
+                state.clone(),
+                device_id,
+                auth.shard_prefix.clone(),
+                auth.location,
+                connected_at,
+                sender,
+            ))
+        });
+
     let last_activity = Arc::new(AtomicU64::new(now_ms()));
+    let batcher = Arc::new(Mutex::new(AckBatcher::new(replay::ACK_MIN_INTERVAL)));
 
     // Writer: everything the device is sent goes through this one task.
     let mut writer = tokio::spawn(async move {
@@ -289,13 +348,19 @@ async fn handle_socket(socket: WebSocket, state: WorkerState, device_id: Uuid, a
         let _ = sink.close().await;
     });
 
-    // Reader: only used to notice the client leaving or going silent.
+    // Reader: notices the client leaving or going silent, and takes acks.
     let mut reader = {
         let last_activity = last_activity.clone();
+        let batcher = batcher.clone();
+        let state = state.clone();
         tokio::spawn(async move {
             while let Some(frame) = stream.next().await {
                 match frame {
                     Ok(Message::Close(_)) | Err(_) => break,
+                    Ok(Message::Text(text)) => {
+                        last_activity.store(now_ms(), Ordering::Relaxed);
+                        on_client_text(&state, device_id, &batcher, text.as_str()).await;
+                    }
                     Ok(_) => last_activity.store(now_ms(), Ordering::Relaxed),
                 }
             }
@@ -331,6 +396,18 @@ async fn handle_socket(socket: WebSocket, state: WorkerState, device_id: Uuid, a
     writer.abort();
     reader.abort();
     heartbeat.abort();
+    if let Some(task) = replay_task {
+        task.abort();
+    }
+
+    // Store the last acknowledgement that was still waiting for its turn.
+    let pending = batcher
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take_pending();
+    if let Some(cursor) = pending {
+        write_cursor(&state, device_id, cursor).await;
+    }
 
     // Only clean up what is still ours. If a newer connection of the same
     // device has replaced this one, the registry entry and the presence
