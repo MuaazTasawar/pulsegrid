@@ -29,6 +29,9 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 /// A connection that has sent nothing (not even a pong) for this long is closed.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// After the reader or heartbeat ends, the writer gets this long to send its
+/// Close reply and flush before it is aborted.
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectParams {
@@ -310,43 +313,53 @@ async fn handle_socket(socket: WebSocket, state: WorkerState, device_id: Uuid, a
     let last_activity = Arc::new(AtomicU64::new(now_ms()));
     let batcher = Arc::new(Mutex::new(AckBatcher::new(replay::ACK_MIN_INTERVAL)));
 
+    // Asks the writer to send its Close reply and stop.
+    let shutdown = Arc::new(tokio::sync::Notify::new());
+
     // Writer: everything the device is sent goes through this one task.
-    let mut writer = tokio::spawn(async move {
-        let mut sink = sink;
-        let mut ping = tokio::time::interval(PING_INTERVAL);
-        ping.tick().await; // the first tick fires immediately
-        loop {
-            tokio::select! {
-                outbound = receiver.recv() => {
-                    let Some(outbound) = outbound else { break };
-                    match outbound {
-                        Outbound::Alert(payload) => {
-                            if !send(&mut sink, Message::Binary(payload)).await {
-                                break;
+    let mut writer = {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            let mut sink = sink;
+            let mut ping = tokio::time::interval(PING_INTERVAL);
+            ping.tick().await; // the first tick fires immediately
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => {
+                        let _ = send(&mut sink, Message::Close(None)).await;
+                        break;
+                    }
+                    outbound = receiver.recv() => {
+                        let Some(outbound) = outbound else { break };
+                        match outbound {
+                            Outbound::Alert(payload) => {
+                                if !send(&mut sink, Message::Binary(payload)).await {
+                                    break;
+                                }
                             }
-                        }
-                        Outbound::Control { text, close } => {
-                            let sent = send(&mut sink, Message::Text(text.into())).await;
-                            if close || !sent {
+                            Outbound::Control { text, close } => {
+                                let sent = send(&mut sink, Message::Text(text.into())).await;
+                                if close || !sent {
+                                    let _ = send(&mut sink, Message::Close(None)).await;
+                                    break;
+                                }
+                            }
+                            Outbound::Close => {
                                 let _ = send(&mut sink, Message::Close(None)).await;
                                 break;
                             }
                         }
-                        Outbound::Close => {
-                            let _ = send(&mut sink, Message::Close(None)).await;
+                    }
+                    _ = ping.tick() => {
+                        if !send(&mut sink, Message::Ping(Bytes::new())).await {
                             break;
                         }
                     }
                 }
-                _ = ping.tick() => {
-                    if !send(&mut sink, Message::Ping(Bytes::new())).await {
-                        break;
-                    }
-                }
             }
-        }
-        let _ = sink.close().await;
-    });
+            let _ = sink.close().await;
+        })
+    };
 
     // Reader: notices the client leaving or going silent, and takes acks.
     let mut reader = {
@@ -388,10 +401,16 @@ async fn handle_socket(socket: WebSocket, state: WorkerState, device_id: Uuid, a
         })
     };
 
-    tokio::select! {
-        _ = &mut writer => {}
-        _ = &mut reader => {}
-        _ = &mut heartbeat => {}
+    let writer_finished = tokio::select! {
+        _ = &mut writer => true,
+        _ = &mut reader => false,
+        _ = &mut heartbeat => false,
+    };
+    if !writer_finished {
+        // The client left (or went silent): let the writer answer the close
+        // handshake and flush before it is cut off.
+        shutdown.notify_one();
+        let _ = tokio::time::timeout(CLOSE_GRACE, &mut writer).await;
     }
     writer.abort();
     reader.abort();

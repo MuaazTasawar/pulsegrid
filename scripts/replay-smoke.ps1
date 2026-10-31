@@ -124,7 +124,16 @@ try {
     $ackBytes = [System.ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($ack))
     $first.SendAsync($ackBytes, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $cts.Token).GetAwaiter().GetResult() | Out-Null
     Start-Sleep -Milliseconds 1500
-    $first.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'offline', $cts.Token).GetAwaiter().GetResult() | Out-Null
+    # Going offline: a failed close handshake must not fail the experiment,
+    # the device is simply gone either way.
+    try {
+        $offlineCts = New-Object System.Threading.CancellationTokenSource
+        $offlineCts.CancelAfter([TimeSpan]::FromSeconds(3))
+        $first.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'offline', $offlineCts.Token).GetAwaiter().GetResult() | Out-Null
+    } catch {
+        Write-Host "   (the close handshake did not complete cleanly; treating the device as offline anyway)" -ForegroundColor DarkYellow
+        try { $first.Abort() } catch { }
+    }
     Start-Sleep -Milliseconds 500
 
     Step "alert B is sent while the device is OFFLINE"

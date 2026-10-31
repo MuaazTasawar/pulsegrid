@@ -123,12 +123,16 @@ async fn run_device(
     };
 
     connected_counter.fetch_add(1, Ordering::Relaxed);
-    if idx % 200 == 0 {
-        println!("  ...{} connected so far", connected_counter.load(Ordering::Relaxed));
+    if idx.is_multiple_of(200) {
+        println!(
+            "  ...{} connected so far",
+            connected_counter.load(Ordering::Relaxed)
+        );
     }
 
     let (_, mut read) = ws_stream.split();
-    let wait_result = tokio::time::timeout(Duration::from_secs(delivery_timeout_secs), read.next()).await;
+    let wait_result =
+        tokio::time::timeout(Duration::from_secs(delivery_timeout_secs), read.next()).await;
 
     match wait_result {
         Ok(Some(Ok(Message::Binary(_)))) => {
@@ -136,7 +140,9 @@ async fn run_device(
             let t0_snapshot = { *t0.lock().unwrap() };
             match t0_snapshot {
                 Some(start) => {
-                    let _ = tx.send(Outcome::Delivered(recv_instant.duration_since(start))).await;
+                    let _ = tx
+                        .send(Outcome::Delivered(recv_instant.duration_since(start)))
+                        .await;
                 }
                 None => {
                     let _ = tx.send(Outcome::DeliveryTimeout).await;
@@ -178,9 +184,18 @@ async fn main() -> anyhow::Result<()> {
 
         tokio::spawn(async move {
             run_device(
-                idx, coordinator_url, fanout_url, center_lat, center_lon,
-                scatter_radius, delivery_timeout, connected_counter, t0, tx,
-            ).await;
+                idx,
+                coordinator_url,
+                fanout_url,
+                center_lat,
+                center_lon,
+                scatter_radius,
+                delivery_timeout,
+                connected_counter,
+                t0,
+                tx,
+            )
+            .await;
         });
 
         if idx % BATCH_SIZE == 0 && idx > 0 {
@@ -189,12 +204,18 @@ async fn main() -> anyhow::Result<()> {
     }
     drop(tx);
 
-    println!("waiting up to {}s for devices to register + connect...", args.connect_timeout_secs);
+    println!(
+        "waiting up to {}s for devices to register + connect...",
+        args.connect_timeout_secs
+    );
     let connect_deadline = Instant::now() + Duration::from_secs(args.connect_timeout_secs);
     loop {
         let connected = connected_counter.load(Ordering::Relaxed);
         if connected >= args.devices || Instant::now() >= connect_deadline {
-            println!("{connected}/{} devices connected, firing alert", args.devices);
+            println!(
+                "{connected}/{} devices connected, firing alert",
+                args.devices
+            );
             break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -218,7 +239,10 @@ async fn main() -> anyhow::Result<()> {
     let body_text = response.text().await.unwrap_or_default();
     println!("alert dispatch response ({status}): {body_text}");
 
-    println!("collecting delivery results (up to {}s)...", args.delivery_timeout_secs + 5);
+    println!(
+        "collecting delivery results (up to {}s)...",
+        args.delivery_timeout_secs + 5
+    );
     let mut histogram = Histogram::<u64>::new(3)?;
     let mut delivered = 0usize;
     let mut register_failed = 0usize;
