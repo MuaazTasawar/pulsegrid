@@ -33,6 +33,7 @@ pub struct AppState {
     pub alert_dispatch_service: AlertDispatchService,
     pub retention: RetentionService,
     pub telemetry: TelemetryService,
+    pub device_repo: infra::DeviceRepository,
     pub shard_registry: infra::ShardRegistry,
     pub revocation_store: infra::RevocationStore,
     pub verifier: TokenVerifier,
@@ -142,7 +143,7 @@ pub async fn build_state(config: &Config) -> Result<AppState, AppError> {
         metrics.clone(),
     );
     let retention = RetentionService::new(
-        device_repo,
+        device_repo.clone(),
         alert_repo,
         config.device_retention_days,
         config.alert_retention_days,
@@ -154,6 +155,7 @@ pub async fn build_state(config: &Config) -> Result<AppState, AppError> {
         alert_dispatch_service,
         retention,
         telemetry: TelemetryService::new(),
+        device_repo,
         shard_registry,
         revocation_store,
         verifier,

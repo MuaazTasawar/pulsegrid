@@ -25,6 +25,9 @@ const els = {
   message: $('message'),
   send: $('send'),
   result: $('result'),
+  showDevices: $('show-devices'),
+  clearDevices: $('clear-devices'),
+  devicesNote: $('devices-note'),
   log: $('log'),
 };
 
@@ -229,6 +232,52 @@ async function sendAlert() {
   }
 }
 els.send.addEventListener('click', sendAlert);
+
+// ---------------------------------------------------------------- devices
+
+const deviceLayer = L.layerGroup().addTo(map);
+
+async function showDevices() {
+  const key = els.key.value.trim();
+  if (!key) { els.devicesNote.textContent = 'Enter the operator key first.'; return; }
+
+  const wrapped = center.wrap();
+  const query = new URLSearchParams({
+    lat: String(wrapped.lat),
+    lon: String(wrapped.lng),
+    radius_meters: els.radius.value,
+  });
+
+  els.showDevices.disabled = true;
+  els.devicesNote.textContent = 'Loading\u2026';
+  try {
+    const response = await fetch('/dashboard/devices?' + query, { headers: { 'X-API-Key': key } });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      els.devicesNote.textContent = 'Refused (HTTP ' + response.status + '): ' + (data.error || 'no details');
+      return;
+    }
+    const data = await response.json();
+    deviceLayer.clearLayers();
+    for (const device of data.devices) {
+      L.circleMarker([device.lat, device.lon], {
+        radius: 3, color: '#1f6feb', weight: 1, fillOpacity: 0.8, interactive: false,
+      }).addTo(deviceLayer);
+    }
+    els.devicesNote.textContent = data.devices.length + ' devices shown' +
+      (data.truncated ? ' (capped at ' + data.limit + '; more exist in this circle)' : '') + '.';
+  } catch (error) {
+    els.devicesNote.textContent = 'Could not load devices: ' + error.message;
+  } finally {
+    els.showDevices.disabled = false;
+  }
+}
+
+els.showDevices.addEventListener('click', showDevices);
+els.clearDevices.addEventListener('click', () => {
+  deviceLayer.clearLayers();
+  els.devicesNote.textContent = '';
+});
 
 // ----------------------------------------------------------------- stream
 

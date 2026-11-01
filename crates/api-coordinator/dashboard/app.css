@@ -79,6 +79,7 @@ button {
   cursor: pointer;
 }
 
+button + button { margin-left: 6px; }
 button:disabled { opacity: 0.5; cursor: default; }
 
 .muted { color: var(--muted); margin: 4px 0; }

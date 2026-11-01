@@ -3,7 +3,7 @@ use axum::Router;
 
 use crate::config::RateLimits;
 use crate::extractors::operator_auth::require_operator;
-use crate::handlers::dashboard::{app_css, app_js, page, stream};
+use crate::handlers::dashboard::{app_css, app_js, devices, page, stream};
 use crate::middleware::rate_limit::with_limit;
 use crate::AppState;
 
@@ -16,9 +16,13 @@ pub fn router(state: &AppState, limits: &RateLimits) -> Router<AppState> {
         .route("/dashboard/app.js", get(app_js))
         .route("/dashboard/app.css", get(app_css));
 
-    let private = Router::new().route("/dashboard/stream", get(stream)).layer(
-        axum::middleware::from_fn_with_state(state.operator_keys.clone(), require_operator),
-    );
+    let private = Router::new()
+        .route("/dashboard/stream", get(stream))
+        .route("/dashboard/devices", get(devices))
+        .layer(axum::middleware::from_fn_with_state(
+            state.operator_keys.clone(),
+            require_operator,
+        ));
 
     with_limit(public.merge(private), limits.location, limits)
 }
