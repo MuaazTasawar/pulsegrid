@@ -24,6 +24,7 @@ use metrics::Metrics;
 use services::alert_dispatch_service::{AlertDispatchService, JetStreamPublisher};
 use services::device_service::{DeviceService, DeviceServiceParts};
 use services::retention_service::RetentionService;
+use services::telemetry_service::TelemetryService;
 use tokio::task::JoinHandle;
 
 #[derive(Clone)]
@@ -31,6 +32,7 @@ pub struct AppState {
     pub device_service: DeviceService,
     pub alert_dispatch_service: AlertDispatchService,
     pub retention: RetentionService,
+    pub telemetry: TelemetryService,
     pub shard_registry: infra::ShardRegistry,
     pub revocation_store: infra::RevocationStore,
     pub verifier: TokenVerifier,
@@ -151,6 +153,7 @@ pub async fn build_state(config: &Config) -> Result<AppState, AppError> {
         device_service,
         alert_dispatch_service,
         retention,
+        telemetry: TelemetryService::new(),
         shard_registry,
         revocation_store,
         verifier,
@@ -162,12 +165,16 @@ pub async fn build_state(config: &Config) -> Result<AppState, AppError> {
     })
 }
 
-/// Starts the long-running background jobs (the retention sweep). Tests that
-/// build the state skip this on purpose.
+/// Starts the long-running background jobs (the retention sweep and the
+/// delivery-telemetry feed for the dashboard). Tests that build the state
+/// skip this on purpose.
 pub fn start_background_tasks(state: &AppState, config: &Config) -> Vec<JoinHandle<()>> {
-    vec![state.retention.clone().spawn(Duration::from_secs(
-        config.retention_sweep_interval_minutes * 60,
-    ))]
+    vec![
+        state.retention.clone().spawn(Duration::from_secs(
+            config.retention_sweep_interval_minutes * 60,
+        )),
+        state.telemetry.spawn(state.nats.clone()),
+    ]
 }
 
 /// Request-id, tracing and metrics layers shared by the real router and the
@@ -203,6 +210,7 @@ pub fn build_router(state: AppState, limits: &RateLimits) -> Router {
         .merge(routes::devices::router(limits))
         .merge(routes::alerts::router(&state, limits))
         .merge(routes::admin::router(&state, limits))
+        .merge(routes::dashboard::router(&state, limits))
         .route("/health", get(handlers::ops::health))
         .route("/ready", get(handlers::ops::ready))
         .route("/metrics", get(handlers::ops::metrics));

@@ -1,0 +1,93 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1c2024;
+  --muted: #5f6b76;
+  --line: #d5dae0;
+  --accent: #1f6feb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161a1e;
+    --fg: #e6e9ec;
+    --muted: #9aa5b1;
+    --line: #2d343b;
+    --accent: #4c94ff;
+  }
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+#map {
+  position: absolute;
+  inset: 0 340px 0 0;
+}
+
+#panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  overflow-y: auto;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+}
+
+@media (max-width: 720px) {
+  #map { inset: 0 0 45% 0; }
+  #panel { top: 55%; width: auto; left: 0; border-left: 0; border-top: 1px solid var(--line); }
+}
+
+h1 { font-size: 18px; margin: 0 0 8px; }
+h2 { font-size: 14px; margin: 16px 0 6px; }
+
+section { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+section:last-child { border-bottom: 0; }
+
+label { display: block; margin: 8px 0 2px; font-weight: 600; }
+
+input[type="text"], input[type="password"], select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+input[type="range"] { width: 100%; }
+
+button {
+  margin-top: 8px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled { opacity: 0.5; cursor: default; }
+
+.muted { color: var(--muted); margin: 4px 0; }
+
+#log .row {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+#log .row:last-child { border-bottom: 0; }
+#log .name { font-weight: 600; }
+#log .numbers { color: var(--muted); }

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PulseGrid dashboard</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+  <link rel="stylesheet" href="/dashboard/app.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <aside id="panel">
+    <h1>PulseGrid</h1>
+
+    <section>
+      <label for="key">Operator API key</label>
+      <input id="key" type="password" autocomplete="off" spellcheck="false">
+      <button id="connect" type="button">Connect</button>
+      <p id="status" class="muted">not connected</p>
+    </section>
+
+    <section>
+      <h2>Send an alert</h2>
+      <p class="muted">Click the map to place the centre: <span id="center">24.86070, 67.00110</span></p>
+
+      <label for="radius">Radius: <span id="radius-label">5.0 km</span></label>
+      <input id="radius" type="range" min="500" max="50000" step="500" value="5000">
+
+      <label for="severity">Severity</label>
+      <select id="severity">
+        <option value="info">info</option>
+        <option value="warning" selected>warning</option>
+        <option value="critical">critical</option>
+      </select>
+
+      <label for="title">Title</label>
+      <input id="title" type="text" maxlength="200" placeholder="Dashboard test">
+
+      <label for="message">Message</label>
+      <input id="message" type="text" maxlength="2000" placeholder="Sent from the dashboard">
+
+      <button id="send" type="button">Send alert</button>
+      <p id="result" class="muted"></p>
+    </section>
+
+    <section>
+      <h2>Recent alerts</h2>
+      <p class="muted">Each shard lights up green when it delivered to live sockets, grey when it reached none. Hover a shard for its numbers.</p>
+      <div id="log"></div>
+    </section>
+  </aside>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>
