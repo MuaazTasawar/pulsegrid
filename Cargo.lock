@@ -1842,16 +1842,21 @@ dependencies = [
 name = "integration-tests"
 version = "0.1.0"
 dependencies = [
+ "api-coordinator",
  "async-nats",
+ "axum",
  "chrono",
  "domain",
+ "fanout-worker",
  "futures-util",
  "infra",
+ "reqwest",
  "serde_json",
  "sqlx",
  "testcontainers",
  "testcontainers-modules",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "uuid",
 ]
 
