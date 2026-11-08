@@ -6,24 +6,75 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests of every crate except the integration suite
+        run: cargo test --workspace --exclude integration-tests
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build workspace
-        run: cargo build --workspace
-
-      - name: Run domain unit tests
-        run: cargo test -p domain
-
-      - name: Run integration tests
+  integration:
+    name: Integration and end-to-end tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+      - uses: Swatinem/rust-cache@v2
+      # These tests start their own Postgres, Redis and NATS with
+      # testcontainers; GitHub's Ubuntu runners have Docker.
+      - name: Integration tests
         run: cargo test -p integration-tests
+
+  docker:
+    name: Docker image builds
+    # A release build takes many minutes, so it runs on main only.
+    if: github.event_name == 'push'
+    needs: [lint, unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

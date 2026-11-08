@@ -1,3 +1,8 @@
+# Pinned so that local builds, CI and the Docker image all use the same
+# compiler. A new Rust release can add lints that fail `clippy -D warnings`
+# (it happened once already), so upgrading is a deliberate change: bump this
+# line, the `toolchain:` lines in .github/workflows/ci.yml and the image tag
+# in the Dockerfile together, fix what the new lints find, and commit.
 [toolchain]
-channel = "stable"
+channel = "1.97"
 components = ["rustfmt", "clippy"]
