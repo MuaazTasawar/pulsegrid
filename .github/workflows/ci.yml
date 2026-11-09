@@ -45,7 +45,7 @@ jobs:
           toolchain: "1.97"
       - uses: Swatinem/rust-cache@v2
       - name: Unit tests of every crate except the integration suite
-        run: cargo test --workspace --exclude integration-tests
+        run: cargo test --workspace --exclude integration-tests --no-fail-fast -- --test-threads=1
 
   integration:
     name: Integration and end-to-end tests
