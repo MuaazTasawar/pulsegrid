@@ -59,11 +59,33 @@ mod tests {
     use axum::body::Body;
     use axum::routing::get;
     use axum::Router;
+    use std::future::Future;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
     use tower::{Service, ServiceBuilder, ServiceExt};
     use tower_http::trace::TraceLayer;
     use tracing_subscriber::fmt::MakeWriter;
+
+    /// Every test here sends requests through the same `tracing` call sites
+    /// (the "http" span and tower-http's events), and one test installs a
+    /// per-thread subscriber to read the log output. `tracing` caches, per
+    /// call site, whether anyone is listening, so a test running on another
+    /// thread at the same moment could leave the capturing test with an empty
+    /// log. The tests therefore take this lock and run one at a time. It is a
+    /// plain std mutex taken outside the async body, so nothing holds a lock
+    /// across an `.await`.
+    static TRACING_TESTS: Mutex<()> = Mutex::new(());
+
+    fn serial<F: Future>(body: F) -> F::Output {
+        let _guard = TRACING_TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build the test runtime")
+            .block_on(body)
+    }
 
     fn app() -> Router {
         Router::new()
@@ -93,24 +115,28 @@ mod tests {
             .to_string()
     }
 
-    #[tokio::test]
-    async fn keeps_a_safe_id_and_generates_one_otherwise() {
-        assert_eq!(
-            request_id_for(Some("trace-abc.123:x")).await,
-            "trace-abc.123:x"
-        );
+    #[test]
+    fn keeps_a_safe_id_and_generates_one_otherwise() {
+        serial(async {
+            assert_eq!(
+                request_id_for(Some("trace-abc.123:x")).await,
+                "trace-abc.123:x"
+            );
 
-        let generated = request_id_for(None).await;
-        assert!(Uuid::parse_str(&generated).is_ok());
-        assert_ne!(generated, request_id_for(None).await);
+            let generated = request_id_for(None).await;
+            assert!(Uuid::parse_str(&generated).is_ok());
+            assert_ne!(generated, request_id_for(None).await);
+        });
     }
 
-    #[tokio::test]
-    async fn replaces_unsafe_ids() {
-        for bad in ["has space", "semi;colon", "quote\"d", &"x".repeat(129)] {
-            let id = request_id_for(Some(bad)).await;
-            assert!(Uuid::parse_str(&id).is_ok(), "{bad:?} should be replaced");
-        }
+    #[test]
+    fn replaces_unsafe_ids() {
+        serial(async {
+            for bad in ["has space", "semi;colon", "quote\"d", &"x".repeat(129)] {
+                let id = request_id_for(Some(bad)).await;
+                assert!(Uuid::parse_str(&id).is_ok(), "{bad:?} should be replaced");
+            }
+        });
     }
 
     #[derive(Clone, Default)]
@@ -133,28 +159,30 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn the_request_id_appears_on_log_lines() {
-        let capture = Capture::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(capture.clone())
-            .with_max_level(tracing::Level::DEBUG)
-            .with_ansi(false)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
+    #[test]
+    fn the_request_id_appears_on_log_lines() {
+        serial(async {
+            let capture = Capture::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(capture.clone())
+                .with_max_level(tracing::Level::DEBUG)
+                .with_ansi(false)
+                .finish();
+            let _guard = tracing::subscriber::set_default(subscriber);
 
-        let mut service = app().into_service();
-        let request = axum::http::Request::builder()
-            .uri("/ping")
-            .header("x-request-id", "trace-me-42")
-            .body(Body::empty())
-            .unwrap();
-        let _ = service.call(request).await.unwrap();
+            let mut service = app().into_service();
+            let request = axum::http::Request::builder()
+                .uri("/ping")
+                .header("x-request-id", "trace-me-42")
+                .body(Body::empty())
+                .unwrap();
+            let _ = service.call(request).await.unwrap();
 
-        let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
-        assert!(
-            logs.contains("request_id=trace-me-42"),
-            "request id missing from log output:\n{logs}"
-        );
+            let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+            assert!(
+                logs.contains("request_id=trace-me-42"),
+                "request id missing from log output:\n{logs}"
+            );
+        });
     }
 }
