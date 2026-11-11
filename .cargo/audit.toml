@@ -1,0 +1,33 @@
+# Settings for `cargo audit` (run by .github/workflows/audit.yml).
+#
+# Every ignored advisory below is one we have looked at and cannot or need
+# not fix right now. Anything new, or anything in code that is shipped and
+# actually used, still fails the audit. Review this list whenever
+# jsonwebtoken or testcontainers is upgraded and drop entries that no longer
+# apply.
+
+[advisories]
+ignore = [
+    # rsa 0.9.x "Marvin attack" (RUSTSEC-2023-0071): reached through
+    # jsonwebtoken, which compiles in RSA support. PulseGrid only signs and
+    # verifies HS256 and EdDSA tokens and never loads an RSA key, and the
+    # attack needs RSA private-key operations. No fixed release exists for
+    # the version jsonwebtoken depends on.
+    "RUSTSEC-2023-0071",
+
+    # crypto-bigint 0.5.5 timing issues (RUSTSEC-2026-0387): reached through
+    # jsonwebtoken's p256/p384 (ES256/ES384) support, which PulseGrid does
+    # not use. Ed25519 does not go through crypto-bigint. Fixed upstream only
+    # in a newer elliptic-curve generation than jsonwebtoken uses today.
+    "RUSTSEC-2026-0387",
+
+    # libsqlite3-sys (RUSTSEC-2026-0459): present only in Cargo.lock because
+    # of sqlx's optional drivers. `cargo tree -i libsqlite3-sys --target all`
+    # prints nothing, so it is not compiled into any binary. Remove this
+    # entry if that command ever prints a tree.
+    "RUSTSEC-2026-0459",
+
+    # tokio-tar (RUSTSEC-2025-0111): a dev-dependency of testcontainers
+    # only, used by the test suite and not shipped. No fixed release exists.
+    "RUSTSEC-2025-0111",
+]

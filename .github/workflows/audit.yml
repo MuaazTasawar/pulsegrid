@@ -1,0 +1,46 @@
+name: Security audit
+
+# New advisories appear without any change to our code, so this also runs on
+# a schedule, not just when the lockfile changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - ".cargo/audit.toml"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - ".cargo/audit.toml"
+      - ".github/workflows/audit.yml"
+  schedule:
+    - cron: "17 3 * * 1" # Mondays, 03:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # The repository pins its toolchain, so install the same one; cargo
+      # audit itself only reads Cargo.lock.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+      # A prebuilt binary: compiling cargo-audit from source takes minutes.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit Cargo.lock against the RustSec advisory database
+        run: cargo audit
