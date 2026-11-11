@@ -53,6 +53,7 @@ services:
       - postgres
       - redis
       - nats
+    restart: on-failure:5
 
   worker-b:
     build: .
@@ -70,3 +71,4 @@ services:
       - postgres
       - redis
       - nats
+    restart: on-failure:5

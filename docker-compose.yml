@@ -9,6 +9,15 @@ services:
       - "5435:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # The app services must not start until Postgres really accepts TCP
+    # connections. -h 127.0.0.1 matters: during the first initialisation the
+    # image runs a temporary server that only listens on a unix socket, and a
+    # plain `pg_isready` would already report "ready" then.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U pulsegrid -d pulsegrid"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   redis:
     image: redis:7-alpine
@@ -33,10 +42,17 @@ services:
     env_file: .env.docker
     ports:
       - "8090:8090"
+    # Postgres has to be healthy (see its healthcheck); redis and nats only
+    # have to have started. If anything still fails at start-up, retry a few
+    # times instead of staying down.
     depends_on:
-      - postgres
-      - redis
-      - nats
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      nats:
+        condition: service_started
+    restart: on-failure:5
 
   fanout-worker:
     build: .
@@ -44,10 +60,17 @@ services:
     env_file: .env.docker
     ports:
       - "8081:8081"
+    # Postgres has to be healthy (see its healthcheck); redis and nats only
+    # have to have started. If anything still fails at start-up, retry a few
+    # times instead of staying down.
     depends_on:
-      - postgres
-      - redis
-      - nats
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      nats:
+        condition: service_started
+    restart: on-failure:5
 
 volumes:
   pgdata:
