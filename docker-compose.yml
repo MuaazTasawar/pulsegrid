@@ -24,10 +24,13 @@ services:
     volumes:
       - natsdata:/data
 
+  # The two app services run INSIDE Docker, so they read .env.docker (service
+  # names such as postgres:5432), not .env (localhost, for `cargo run`).
+  # Create it once with:  .\scripts\gen-secrets.ps1 -Docker
   api-coordinator:
     build: .
     command: api-coordinator
-    env_file: .env
+    env_file: .env.docker
     ports:
       - "8090:8090"
     depends_on:
@@ -38,7 +41,7 @@ services:
   fanout-worker:
     build: .
     command: fanout-worker
-    env_file: .env
+    env_file: .env.docker
     ports:
       - "8081:8081"
     depends_on:

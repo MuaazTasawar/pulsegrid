@@ -9,10 +9,13 @@
 # Do NOT start the base `fanout-worker` service next to these, and stop any
 # workers/coordinator you run natively (cargo run): ports and shard leases clash.
 #
-# Secrets (JWT_SECRET, OPERATOR_API_KEYS) come from .env as in the base file;
-# the connection URLs below point at the compose service names instead of
-# localhost. Rate limits are switched off because one load generator on one
-# IP would otherwise be throttled; never do that outside a benchmark.
+# Secrets (JWT_SECRET, OPERATOR_API_KEYS) come from .env.docker, the same file
+# the base services use, so the coordinator and both workers always share
+# them (create it with  .\scripts\gen-secrets.ps1 -Docker). The connection
+# URLs below are repeated here, pointing at the compose service names, so the
+# harness keeps working even if .env.docker was edited. Rate limits are
+# switched off because one load generator on one IP would otherwise be
+# throttled; never do that outside a benchmark.
 
 x-worker-env: &worker-env
   PULSEGRID_ENV: development
@@ -22,7 +25,7 @@ x-worker-env: &worker-env
   RATE_LIMIT_DISABLED: "true"
   # Per-IP WebSocket connect limit of the worker (one load generator = one IP).
   WS_CONNECT_RATE_PER_SEC: "1000"
-  WS_CONNECT_RATE_BURST: "1000"
+  WS_CONNECT_BURST: "1000"
 
 services:
   api-coordinator:
@@ -37,7 +40,7 @@ services:
   worker-a:
     build: .
     command: fanout-worker
-    env_file: .env
+    env_file: .env.docker
     cpus: 1.0
     environment:
       <<: *worker-env
@@ -54,7 +57,7 @@ services:
   worker-b:
     build: .
     command: fanout-worker
-    env_file: .env
+    env_file: .env.docker
     cpus: 1.0
     environment:
       <<: *worker-env

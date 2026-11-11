@@ -854,15 +854,14 @@ Open `http://localhost:8090/dashboard`, paste an operator key and press **Connec
 
 ### 12.5 Run everything in Docker
 
-`docker-compose.yml` also defines `api-coordinator` and `fanout-worker` services built from the `Dockerfile`. Their `env_file` is `.env`, whose URLs (`localhost`, host ports) are wrong **inside** containers. Use the container-side template instead, which uses service names and container ports:
+`docker-compose.yml` also defines `api-coordinator` and `fanout-worker` services built from the `Dockerfile`. Their `env_file` is `.env.docker`, the container-side configuration, which uses service names and container ports. The host-run `.env` uses `localhost` and host ports, which would be wrong **inside** containers. Create it once:
 
 ```powershell
-copy .env.docker.example .env.docker          # or  .\scripts\gen-secrets.ps1 -Docker
-# then point env_file at .env.docker for the two app services
+.\scripts\gen-secrets.ps1 -Docker            # or:  copy .env.docker.example .env.docker
 docker compose up -d --build
 ```
 
-This split is not yet wired into the repository's compose file (see [§21](#21-known-limitations--honest-caveats)). `docker-compose.scale.yml` avoids the problem for its services by overriding the three URLs; it is what `bench.ps1` uses.
+`gen-secrets -Docker` generates its own random secrets, different from the ones in `.env`, so do not mix a host-run coordinator with containerised workers. `docker-compose.scale.yml` reads the same `.env.docker` for all of its services (and repeats the three URLs); it is what `bench.ps1` uses.
 
 ### 12.6 Run the load test
 
@@ -1374,7 +1373,7 @@ These are listed so no one mistakes the system for something it isn't.
 
 **Operations**
 
-12. **The base `docker-compose.yml` app services read `.env`,** whose URLs are for host runs. For containers use `.env.docker` ([§12.5](#125-run-everything-in-docker)); `docker-compose.scale.yml` overrides the URLs itself.
+12. **The compose app services read `.env.docker`, not `.env`.** Create it with `.\scripts\gen-secrets.ps1 -Docker` ([§12.5](#125-run-everything-in-docker)). Its secrets differ from `.env`, so a host-run process and a container do not accept each other's tokens.
 13. **Registering many devices at once is slow on a dev machine** (database pool contention, [§18.4](#184-what-this-does-not-show)).
 14. **The Docker build is a full release compile** and takes many minutes without a warm BuildKit cache.
 15. **The Rust version is pinned** (`rust-toolchain.toml`, CI, Dockerfile). Upgrading is a deliberate change: bump all three, fix whatever the new lints report, commit.
@@ -1401,7 +1400,6 @@ These are listed so no one mistakes the system for something it isn't.
 - [ ] Exact shard routing (distance from the center to the nearest point of each cell) so small circles publish to fewer shards
 - [ ] Per-operator identities, key rotation and an audit trail of who sent which alert
 - [ ] TLS termination and deployment manifests (Kubernetes / Helm); worker autoscaling by connection count
-- [ ] Wire `.env.docker` into the base Compose file
 - [ ] Benchmarks at higher device counts with repeated runs, and on separate hosts
 - [ ] Failure tests for Postgres, Redis and NATS outages; high-availability setups for all three
 - [ ] Richer metrics and alerting rules (per-shard delivered and dropped, dispatch latency histograms)
@@ -1479,7 +1477,8 @@ These are listed so no one mistakes the system for something it isn't.
 | Alert returns 200 but a device sees nothing | Device not connected, outside the circle, queue full (`dropped`), or connected to a shard that was not targeted | Check the worker log line `alert fanned out to shard` (`delivered`, `dropped`, `filtered_out`) or watch the dashboard |
 | Dashboard says "operator key was rejected" | Wrong key | Paste a key from `OPERATOR_API_KEYS` |
 | Dashboard map is blank | No internet access for Leaflet or tiles | Check the browser console; the page needs cdnjs and OpenStreetMap |
-| Compose app services can't reach Postgres/Redis/NATS | `.env` points at `localhost` | Use `.env.docker` with service names and container ports ([§12.5](#125-run-everything-in-docker)) |
+| Compose says it cannot find `.env.docker` | The container config was never created | Run `.\scripts\gen-secrets.ps1 -Docker` ([§12.5](#125-run-everything-in-docker)) |
+| Compose app services can't reach Postgres/Redis/NATS | `.env.docker` was edited to use `localhost` | Restore service names and container ports from `.env.docker.example` ([§12.5](#125-run-everything-in-docker)) |
 | Integration tests fail to start containers | Docker not running | Start Docker; `testcontainers` needs it |
 | After unpacking changed files, tests still show the old behavior | Cargo compares file times and the new files looked older | Touch the changed files so cargo rebuilds, e.g. `Get-ChildItem crates -Recurse -Include *.rs \| ForEach-Object { $_.LastWriteTime = Get-Date }` |
 | PowerShell refuses a downloaded script | The file is marked as downloaded | `Unblock-File .\scripts\<name>.ps1` |

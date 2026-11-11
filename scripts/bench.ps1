@@ -57,6 +57,16 @@ function Wait-Ready($url, $seconds) {
 $compose = @('-f', 'docker-compose.yml', '-f', 'docker-compose.scale.yml')
 $stackServices = @('postgres', 'redis', 'nats', 'api-coordinator', 'worker-a', 'worker-b')
 
+# The containers read their secrets from .env.docker (not .env), so the load
+# generator must use the operator key from that same file, otherwise every
+# alert is rejected with 401. The first key is used if several are configured.
+$dockerEnv = Join-Path $root '.env.docker'
+if (-not (Test-Path $dockerEnv)) { Fail ".env.docker not found. Run .\scripts\gen-secrets.ps1 -Docker first (the containers read their secrets from it)." }
+$keyLine = Get-Content $dockerEnv | Where-Object { $_ -match '^\s*OPERATOR_API_KEYS\s*=' } | Select-Object -First 1
+if (-not $keyLine) { Fail "OPERATOR_API_KEYS is not set in .env.docker. Run .\scripts\gen-secrets.ps1 -Docker." }
+$operatorKey = (($keyLine -replace '^\s*OPERATOR_API_KEYS\s*=\s*', '') -split ',')[0].Trim().Trim('"').Trim("'")
+if (-not $operatorKey) { Fail "OPERATOR_API_KEYS in .env.docker is empty." }
+
 if (-not $UseRunningStack) {
     Step "starting the scale stack (coordinator + 2 workers, CPU-limited)"
     $up = $compose + @('up', '-d')
@@ -78,6 +88,7 @@ if ($LASTEXITCODE -ne 0) { Fail "cargo build failed" }
 Step "running loadgen: $Devices devices, $Alerts measured alerts every $IntervalMs ms"
 $lines = & (Join-Path $root 'target\release\loadgen.exe') `
     --coordinator $Coordinator `
+    --operator-key $operatorKey `
     --devices $Devices `
     --alerts $Alerts `
     --warmup-alerts $WarmupAlerts `
