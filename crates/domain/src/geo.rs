@@ -15,8 +15,10 @@ pub const GEOHASH_PRECISION: usize = 7;
 /// fine enough that one shard doesn't end up owning an entire country.
 pub const SHARD_PREFIX_LENGTH: usize = 4;
 
-const METERS_PER_DEGREE_LAT: f64 = 111_320.0;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
+/// A cell is targeted when the circle reaches it, with this much slack so
+/// floating point error can never drop a cell the circle only just touches.
+const EDGE_MARGIN_M: f64 = 1.0;
 /// Hard safety cap on ring expansion so a malformed radius can never spin
 /// the BFS into an unbounded loop. If a radius needs more rings than this
 /// (only possible very close to the poles, where cells get narrow) the
@@ -47,11 +49,11 @@ pub fn shard_prefix_of(geohash: &str) -> String {
 ///
 /// Algorithm: BFS ring expansion over the geohash neighbor grid, starting
 /// from the center cell and expanding outward one ring per iteration
-/// until the covered radius exceeds the requested alert radius. Grid
-/// expansion over-covers slightly at the diagonal edges of each ring, so
-/// a haversine-distance prune pass drops any candidate cell whose decoded
-/// center falls outside `radius + one cell diagonal` of the true center --
-/// keeping the result tight instead of alerting a needlessly wide area.
+/// until the rings cover the requested radius. The ring count is a safe
+/// over-estimate, so a second pass keeps only the cells the circle really
+/// reaches: a cell is kept when the distance from the circle's center to
+/// the nearest point of the cell is at most the radius (see
+/// `distance_to_bounds_meters`). The result is sorted.
 pub fn shard_prefixes_for_radius(
     center: &Location,
     radius_meters: f64,
@@ -95,14 +97,6 @@ pub fn shard_prefixes_for_radius(
         )));
     }
 
-    // Cell dimensions for the prune step. Cells get wider (in meters) the
-    // closer they are to the equator, so measure the widest one the circle
-    // can touch.
-    let (_, cell_height_m) = cell_dims_meters(&center_hash, center.lat)?;
-    let nearest_equator_lat = (center.lat.abs() - lat_extent_deg).max(0.0);
-    let (cell_width_m, _) = cell_dims_meters(&center_hash, nearest_equator_lat)?;
-    let cell_size_m = cell_width_m.min(cell_height_m).max(1.0);
-
     let mut visited: HashSet<String> = HashSet::new();
     let mut frontier: Vec<String> = vec![center_hash.clone()];
     visited.insert(center_hash);
@@ -123,31 +117,66 @@ pub fn shard_prefixes_for_radius(
         frontier = next_frontier;
     }
 
-    // One cell of slack so cells that merely clip the circle are kept: the
-    // larger of "min side x sqrt2" and the true half-diagonal of the cell.
-    let diagonal_buffer_m =
-        (cell_size_m * std::f64::consts::SQRT_2).max(0.5 * cell_width_m.hypot(cell_height_m));
+    // Keep only the cells the circle really reaches.
     let mut result = Vec::with_capacity(visited.len());
     for hash in visited {
-        let (coord, _, _) = decode(&hash).map_err(|e| AppError::GeohashError(e.to_string()))?;
-        let distance = haversine_distance_meters(center.lat, center.lon, coord.y, coord.x);
-        if distance <= radius_meters + diagonal_buffer_m {
+        let bounds = cell_bounds(&hash)?;
+        let nearest = distance_to_bounds_meters(center.lat, center.lon, &bounds);
+        if nearest <= radius_meters + EDGE_MARGIN_M {
             result.push(hash);
         }
     }
+    result.sort();
 
     Ok(result)
 }
 
-/// Width and height of a geohash cell in meters at the given latitude,
-/// from the decoded half-cell error margins (degrees) converted with the
-/// standard meters-per-degree approximation.
-fn cell_dims_meters(hash: &str, lat: f64) -> Result<(f64, f64), AppError> {
-    let (_, lon_err, lat_err) = decode(hash).map_err(|e| AppError::GeohashError(e.to_string()))?;
-    let meters_per_degree_lon = METERS_PER_DEGREE_LAT * lat.to_radians().cos();
-    let width_m = (2.0 * lon_err * meters_per_degree_lon).max(1.0);
-    let height_m = (2.0 * lat_err * METERS_PER_DEGREE_LAT).max(1.0);
-    Ok((width_m, height_m))
+/// Smallest great-circle distance in meters from a point to any point of a
+/// cell rectangle (0 when the point is inside it).
+///
+/// A cell's sides are parallels (constant latitude) and meridians (constant
+/// longitude), and on a sphere the nearest point of such a side is not
+/// always the one at the point's own latitude or longitude, so each case is
+/// worked out exactly:
+/// - the point's longitude lies within the cell: the nearest point is on
+///   the nearest parallel, at the point's own longitude;
+/// - otherwise the nearest point is on the nearer meridian (longitudes wrap
+///   at the antimeridian). Along a meridian the distance is smallest at the
+///   foot of the perpendicular, whose latitude satisfies
+///   `tan(foot) = tan(lat) / cos(dlon)`, clamped to the cell's latitudes.
+fn distance_to_bounds_meters(lat: f64, lon: f64, b: &BoundingBox) -> f64 {
+    let lat_in = lat >= b.min_lat && lat <= b.max_lat;
+    let lon_in = lon >= b.min_lon && lon <= b.max_lon;
+    if lat_in && lon_in {
+        return 0.0;
+    }
+    if lon_in {
+        let edge_lat = lat.clamp(b.min_lat, b.max_lat);
+        return haversine_distance_meters(lat, lon, edge_lat, lon);
+    }
+
+    let to_min = wrap_degrees(b.min_lon - lon);
+    let to_max = wrap_degrees(b.max_lon - lon);
+    let (edge_lon, dlon_deg) = if to_min.abs() <= to_max.abs() {
+        (b.min_lon, to_min)
+    } else {
+        (b.max_lon, to_max)
+    };
+    let dist_at = |edge_lat: f64| haversine_distance_meters(lat, lon, edge_lat, edge_lon);
+    let cos_dlon = dlon_deg.to_radians().cos();
+    if cos_dlon > 1e-9 {
+        let foot_lat = (lat.to_radians().tan() / cos_dlon).atan().to_degrees();
+        dist_at(foot_lat.clamp(b.min_lat, b.max_lat))
+    } else {
+        // 90 degrees or more away in longitude (only near the poles): the
+        // distance changes monotonically along the edge, so an end is nearest.
+        dist_at(b.min_lat).min(dist_at(b.max_lat))
+    }
+}
+
+/// Wraps an angle in degrees into [-180, 180).
+fn wrap_degrees(degrees: f64) -> f64 {
+    (degrees + 180.0).rem_euclid(360.0) - 180.0
 }
 
 /// A latitude/longitude rectangle in degrees.
@@ -266,6 +295,79 @@ mod tests {
     }
 
     #[test]
+    fn a_circle_inside_one_cell_targets_only_that_shard() {
+        // The default center is about 8 km from the nearest edge of tkrt.
+        let center = Location::new(24.8607, 67.0011).unwrap();
+        let prefixes = shard_prefixes_for_radius(&center, 5_000.0).unwrap();
+        assert_eq!(prefixes, vec!["tkrt".to_string()]);
+    }
+
+    #[test]
+    fn a_circle_is_routed_to_a_neighbour_exactly_when_it_reaches_it() {
+        // 24.79 is a little over half a kilometre above the south edge of tkrt.
+        let center = Location::new(24.79, 67.0011).unwrap();
+        let south_edge = cell_bounds("tkrt").unwrap().min_lat;
+        let gap = haversine_distance_meters(center.lat, center.lon, south_edge, center.lon);
+        assert!(gap > 100.0 && gap < 1_000.0, "unexpected gap {gap}");
+
+        let short = shard_prefixes_for_radius(&center, gap - 5.0).unwrap();
+        assert_eq!(short, vec!["tkrt".to_string()]);
+
+        let reaching = shard_prefixes_for_radius(&center, gap + 5.0).unwrap();
+        assert_eq!(reaching, vec!["tkrs".to_string(), "tkrt".to_string()]);
+    }
+
+    #[test]
+    fn a_circle_around_a_cell_corner_targets_four_shards() {
+        // Just inside the south-west corner of tkrt.
+        let center = Location::new(24.79, 66.80).unwrap();
+        let prefixes = shard_prefixes_for_radius(&center, 2_000.0).unwrap();
+        assert_eq!(prefixes.len(), 4, "got {prefixes:?}");
+        for expected in ["tkrt", "tkrs", "tkrm"] {
+            assert!(prefixes.contains(&expected.to_string()), "{prefixes:?}");
+        }
+    }
+
+    #[test]
+    fn nearest_point_distance_is_exact_for_points_around_a_cell() {
+        let b = cell_bounds("tkrt").unwrap();
+        // inside
+        assert_eq!(distance_to_bounds_meters(24.87, 67.0, &b), 0.0);
+        // due north, due south: along a meridian
+        let north = distance_to_bounds_meters(b.max_lat + 0.01, 67.0, &b);
+        let expected = haversine_distance_meters(b.max_lat + 0.01, 67.0, b.max_lat, 67.0);
+        assert!((north - expected).abs() < 1e-6);
+        let south = distance_to_bounds_meters(b.min_lat - 0.01, 67.0, &b);
+        let expected = haversine_distance_meters(b.min_lat - 0.01, 67.0, b.min_lat, 67.0);
+        assert!((south - expected).abs() < 1e-6);
+        // east and west of the cell: never farther than the same-latitude
+        // point on the edge, and never nearer than a fine sample of the edge
+        for (lat, lon) in [(24.9, 67.3), (24.9, 66.6), (25.2, 67.5), (24.5, 66.5)] {
+            let d = distance_to_bounds_meters(lat, lon, &b);
+            let edge_lon = if lon > b.max_lon {
+                b.max_lon
+            } else {
+                b.min_lon
+            };
+            let mut sampled = f64::MAX;
+            let steps = 20_000;
+            for i in 0..=steps {
+                let edge_lat =
+                    b.min_lat + (b.max_lat - b.min_lat) * f64::from(i) / f64::from(steps);
+                sampled = sampled.min(haversine_distance_meters(lat, lon, edge_lat, edge_lon));
+            }
+            assert!(
+                d <= sampled + 1e-6,
+                "({lat},{lon}): {d} > sampled {sampled}"
+            );
+            assert!(
+                sampled - d < 1.0,
+                "({lat},{lon}): {d} far below sampled {sampled}"
+            );
+        }
+    }
+
+    #[test]
     fn haversine_zero_distance_for_same_point() {
         let d = haversine_distance_meters(24.86, 67.00, 24.86, 67.00);
         assert!(d < 0.001);
@@ -322,6 +424,26 @@ mod tests {
                             frac * 100.0
                         );
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_targeted_shard_really_touches_the_circle() {
+        for (lat, lon) in CENTERS {
+            let center = Location::new(lat, lon).unwrap();
+            for radius in RADII {
+                let Ok(prefixes) = shard_prefixes_for_radius(&center, radius) else {
+                    continue;
+                };
+                for prefix in prefixes {
+                    let b = cell_bounds(&prefix).unwrap();
+                    let nearest = distance_to_bounds_meters(lat, lon, &b);
+                    assert!(
+                        nearest <= radius + EDGE_MARGIN_M,
+                        "{prefix} is {nearest:.0} m from ({lat},{lon}) but r={radius}"
+                    );
                 }
             }
         }
