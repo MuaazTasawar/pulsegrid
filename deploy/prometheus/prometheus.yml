@@ -1,0 +1,32 @@
+# Prometheus for the production overlay (docker-compose.prod.yml). It scrapes
+# the two services over the internal Compose network, where /metrics is
+# reachable; the public edge hides that path.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # fallback_scrape_protocol: Prometheus 3 refuses a target whose response has
+  # no recognisable Content-Type; this accepts it as the classic text format.
+  - job_name: api-coordinator
+    fallback_scrape_protocol: PrometheusText0.0.4
+    static_configs:
+      - targets: ["api-coordinator:8090"]
+
+  - job_name: fanout-worker
+    fallback_scrape_protocol: PrometheusText0.0.4
+    static_configs:
+      - targets: ["fanout-worker:8081"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

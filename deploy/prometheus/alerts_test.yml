@@ -1,0 +1,135 @@
+# Unit tests for alerts.yml with made-up data. Run from this directory:
+#   promtool test rules alerts_test.yml
+# They prove each rule fires when it should and stays quiet when it should.
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: coordinator down for more than two minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="api-coordinator", instance="api-coordinator:8090"}'
+        values: "1 1 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CoordinatorDown
+        exp_alerts: [] # down for under 2 minutes: still pending
+      - eval_time: 6m
+        alertname: CoordinatorDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: api-coordinator
+              instance: "api-coordinator:8090"
+            exp_annotations:
+              summary: "The coordinator is down"
+              description: "Prometheus cannot scrape the coordinator (api-coordinator:8090). Alerts cannot be sent and devices cannot register."
+
+  - name: worker flapping briefly does not alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="fanout-worker", instance="fanout-worker:8081"}'
+        values: "1 0 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: WorkerDown
+        exp_alerts: []
+
+  - name: a lost shard lease alerts after a minute
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_worker_lease_healthy{job="fanout-worker", instance="fanout-worker:8081"}'
+        values: "1 1 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ShardLeaseLost
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ShardLeaseLost
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: fanout-worker
+              instance: "fanout-worker:8081"
+            exp_annotations:
+              summary: "A worker lost the lease on one of its shards"
+              description: "Worker fanout-worker:8081 no longer holds every shard lease it owns. Another worker may have taken a shard, or Redis is unreachable."
+
+  - name: a failed shard publish alerts at once, a clean history does not
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_alert_shard_failures_total{job="api-coordinator", instance="api-coordinator:8090", shard="tkrt"}'
+        values: "0 0 0 0 3 3 3"
+      - series: 'pulsegrid_alert_shard_failures_total{job="api-coordinator", instance="api-coordinator:8090", shard="tkrw"}'
+        values: "0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AlertPublishFailures
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AlertPublishFailures
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: api-coordinator
+              instance: "api-coordinator:8090"
+              shard: tkrt
+            exp_annotations:
+              summary: "Alerts failed to publish to a shard"
+              description: "3 shard publishes failed in the last 10 minutes. Some areas did not receive an alert. Check NATS (JetStream)."
+
+  - name: dropped alerts are reported per shard
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_worker_alerts_dropped_total{job="fanout-worker", shard="tkrt"}'
+        values: "0 0 5 5 5"
+      - series: 'pulsegrid_worker_alerts_dropped_total{job="fanout-worker", shard="tkrs"}'
+        values: "0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: DevicesDroppingAlerts
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              shard: tkrt
+            exp_annotations:
+              summary: "Alerts were dropped for slow devices"
+              description: "Shard tkrt: 5 alerts were skipped in the last 10 minutes because a device's queue was full."
+
+  - name: slow dispatch needs a sustained p99 above one second
+    interval: 1m
+    input_series:
+      # Every observation lands in the 2.5 s bucket: p99 is far above 1 s.
+      - series: 'pulsegrid_alert_dispatch_duration_seconds_bucket{job="api-coordinator", le="0.5"}'
+        values: "0+0x30"
+      - series: 'pulsegrid_alert_dispatch_duration_seconds_bucket{job="api-coordinator", le="2.5"}'
+        values: "0+10x30"
+      - series: 'pulsegrid_alert_dispatch_duration_seconds_bucket{job="api-coordinator", le="+Inf"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SlowAlertDispatch
+        exp_alerts: [] # not long enough yet
+      - eval_time: 25m
+        alertname: SlowAlertDispatch
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Alert dispatch is slow"
+              description: "p99 time from accepting an alert to publishing it to every shard is 2.48 s (over 1 s for 10 minutes)."
+
+  - name: fast dispatch stays quiet
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_alert_dispatch_duration_seconds_bucket{job="api-coordinator", le="0.05"}'
+        values: "0+10x30"
+      - series: 'pulsegrid_alert_dispatch_duration_seconds_bucket{job="api-coordinator", le="+Inf"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SlowAlertDispatch
+        exp_alerts: []

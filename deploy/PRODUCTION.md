@@ -44,6 +44,7 @@ echo "<token>" | docker login ghcr.io -u <github-user> --password-stdin
 - The server's firewall allowing only SSH, 80 and 443 in. The overlay
   publishes nothing else; the firewall is the second layer.
 - A published image: the CI run on `main` must have finished at least once.
+- A Telegram account, to receive alerts (see "Monitoring and alerts").
 
 ## First start
 
@@ -74,7 +75,11 @@ echo "<token>" | docker login ghcr.io -u <github-user> --password-stdin
    them refuse weak or placeholder secrets at start-up. That refusal is the
    safety net: if a service exits right away, read its log first.
 
-2. Log in to the registry (above), then pull and start:
+2. Set up alerting: follow "Monitoring and alerts" below (a Telegram bot,
+   one number in `deploy/alertmanager/alertmanager.yml`, and one token file).
+   Compose will not run any command until that token file exists.
+
+3. Log in to the registry (above), then pull and start:
 
    ```sh
    $COMPOSE pull
@@ -100,6 +105,8 @@ nc -vz api.example.com 8090                    # must fail: not published
 nc -vz api.example.com 5435                    # must fail
 nc -vz api.example.com 6379                    # must fail
 nc -vz api.example.com 4222                    # must fail
+nc -vz api.example.com 9090                    # must fail (Prometheus: server loopback only)
+nc -vz api.example.com 9093                    # must fail (Alertmanager: server loopback only)
 ```
 
 Open `https://api.example.com/dashboard`, paste an operator key and press
@@ -122,6 +129,64 @@ registration, tickets, the `wss://ws.example.com` connection (the address the
 coordinator hands out comes from `WORKER_PUBLIC_URL`, which the overlay sets
 from `WS_DOMAIN`), an alert, and the delivery report, all through Caddy.
 
+## Monitoring and alerts
+
+Prometheus scrapes the coordinator and the worker every 15 seconds and keeps
+30 days of history. Alertmanager groups the alerts and sends them to
+Telegram. Both web pages are reachable only from the server itself; from your
+own machine use an SSH tunnel and open `http://localhost:9090` (Prometheus:
+Alerts and Targets pages) and `http://localhost:9093` (Alertmanager):
+
+```sh
+ssh -L 9090:localhost:9090 -L 9093:localhost:9093 <user>@<server>
+```
+
+**Set-up (once):**
+
+1. In Telegram, talk to @BotFather, create a bot and keep its token.
+2. Send any message to your new bot, then open
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and read
+   the number after `"chat":{"id":`.
+3. Put that number in `chat_id` in `deploy/alertmanager/alertmanager.yml`
+   (it is not a secret; commit it).
+4. Put the token, and nothing else, in `deploy/secrets/telegram_bot_token`
+   (`chmod 600`). The directory is git-ignored; never commit it.
+
+**Prove the whole path works** (rules, Alertmanager, Telegram) by raising a
+test alert; the message arrives after about 30 seconds:
+
+```sh
+$COMPOSE exec alertmanager amtool alert add TestAlert severity=warning \
+    --annotation=summary="Test alert" --alertmanager.url=http://localhost:9093
+```
+
+**What alerts, and what to do:**
+
+| Alert | Severity | Meaning |
+|---|---|---|
+| CoordinatorDown, WorkerDown | critical | A service cannot be scraped for 2 minutes. Check `$COMPOSE ps` and its logs. |
+| ShardLeaseLost | critical | A worker no longer owns every shard it should (Redis trouble, or another worker took one). |
+| NoShardSubscriptions | critical | A worker listens to no shard, so it receives no alerts. Check NATS. |
+| AlertPublishFailures, PartialAlertDispatch | critical | Some alert did not reach some shard: areas missed an alert. Check NATS (JetStream). |
+| DevicesDroppingAlerts | warning | Devices are too slow to take alerts (queue full). |
+| InvalidAlertMessages | warning | The worker cannot parse alerts: usually a coordinator/worker version mismatch. |
+| ReplayFailures | warning | Reconnecting devices may be missing alerts they were offline for. |
+| SlowAlertDispatch, SlowBroadcast, SlowHttpResponses | warning | p99 latency is high for 10 minutes. |
+| WebSocketRejectSpike | warning | Over 100 refused WebSocket connections in 10 minutes. |
+
+Critical alerts repeat every hour until fixed, warnings every four hours.
+
+**Changing the rules:** edit `deploy/prometheus/alerts.yml`, add or adjust a
+case in `alerts_test.yml` next to it, and run the tests before deploying
+(no installation needed beyond Docker):
+
+```sh
+docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+    prom/prometheus:v3.16.0 test rules /p/alerts_test.yml
+```
+
+Then `$COMPOSE restart prometheus`.
+
 ## Messages in the logs that are harmless
 
 - Caddy: `failed to sufficiently increase receive buffer size`. HTTP/3 would
@@ -138,7 +203,9 @@ from `WS_DOMAIN`), an alert, and the delivery report, all through Caddy.
 
 Set `API_DOMAIN=localhost`, `WS_DOMAIN=ws.localhost`, any `ACME_EMAIL` and
 `POSTGRES_PASSWORD` (use the password your existing `pgdata` volume was
-created with: `pulsegrid` for the development volume) in your shell. Then
+created with: `pulsegrid` for the development volume) in your shell, and
+create a dummy `deploy/secrets/telegram_bot_token` (any text; no alert is
+sent unless one fires). Then
 either log in and `pull` as above, or build the image on your machine with
 `$COMPOSE up -d --build` (slow the first time). Wait about 20 seconds before
 testing. Caddy signs `localhost` with its own certificate authority, so
@@ -171,8 +238,12 @@ check the release's migrations before rolling back across one.
   is downtime and can be data loss.
 - **Backups.** Nothing in this overlay copies data off the server. Treat
   `pgdata` as unprotected until backups exist.
-- **Metrics collection and alerting.** `/metrics` is hidden from the internet
-  and nothing scrapes it yet.
+- **Monitoring of the infrastructure.** The application's metrics are
+  scraped and alerted on, but Postgres, Redis, NATS, Caddy and the host
+  (disk, memory, CPU) have no exporters, so a full disk or a dead
+  database is noticed only through its effect on the application. There
+  is also no "heartbeat" from outside: if the whole server dies,
+  nothing is left to send the alert.
 - **Authentication on Redis and NATS.** They are safe only because they are
   not published; anything else on the Compose network can reach them.
 - **An operator IP allow-list.** The alert and dashboard endpoints are open

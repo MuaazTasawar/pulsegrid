@@ -1,0 +1,31 @@
+# Alertmanager: groups alerts and sends them to Telegram.
+#
+# Before the first start:
+#   1. Create a bot with @BotFather in Telegram and keep its token.
+#   2. Send any message to the bot, then open
+#      https://api.telegram.org/bot<TOKEN>/getUpdates and read "chat":{"id":...}.
+#   3. Put that number in chat_id below (it is not a secret).
+#   4. Put the token, and nothing else, in deploy/secrets/telegram_bot_token
+#      (git-ignored). Compose mounts it at /run/secrets/telegram_bot_token.
+#
+# To use email, Slack or another service instead, replace the receiver
+# below; the rest of the monitoring setup does not change.
+
+route:
+  receiver: telegram
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: telegram
+      repeat_interval: 1h
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token_file: /run/secrets/telegram_bot_token
+        chat_id: 123456789 # CHANGE ME: your chat id
+        send_resolved: true

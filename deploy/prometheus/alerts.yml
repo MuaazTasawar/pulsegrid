@@ -1,0 +1,126 @@
+# Alert rules for PulseGrid. Metric names are the ones the services expose.
+#
+# "critical" means people may not be getting alerts right now: look at once.
+# "warning" means something is degrading: look during working hours.
+#
+# Counters that carry a label (for example a shard) only exist after their
+# first increment, and increase() cannot see that very first step, so the
+# first-ever event of a kind can go unreported. Every later one is caught.
+
+groups:
+  - name: pulsegrid-availability
+    rules:
+      - alert: CoordinatorDown
+        expr: up{job="api-coordinator"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The coordinator is down"
+          description: "Prometheus cannot scrape the coordinator ({{ $labels.instance }}). Alerts cannot be sent and devices cannot register."
+
+      - alert: WorkerDown
+        expr: up{job="fanout-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The fanout worker is down"
+          description: "Prometheus cannot scrape the worker ({{ $labels.instance }}). Devices are not receiving alerts."
+
+      - alert: ShardLeaseLost
+        expr: pulsegrid_worker_lease_healthy == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A worker lost the lease on one of its shards"
+          description: "Worker {{ $labels.instance }} no longer holds every shard lease it owns. Another worker may have taken a shard, or Redis is unreachable."
+
+      - alert: NoShardSubscriptions
+        expr: pulsegrid_worker_subscriptions_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A worker has no active shard subscriptions"
+          description: "Worker {{ $labels.instance }} is subscribed to no shard, so it cannot receive alerts from NATS. Check NATS and the worker log."
+
+  - name: pulsegrid-delivery
+    rules:
+      - alert: AlertPublishFailures
+        expr: increase(pulsegrid_alert_shard_failures_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alerts failed to publish to a shard"
+          description: "{{ $value | printf \"%.0f\" }} shard publishes failed in the last 10 minutes. Some areas did not receive an alert. Check NATS (JetStream)."
+
+      - alert: PartialAlertDispatch
+        expr: increase(pulsegrid_alerts_partial_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alerts were only partly dispatched"
+          description: "{{ $value | printf \"%.0f\" }} alerts failed to reach at least one shard in the last 10 minutes."
+
+      - alert: DevicesDroppingAlerts
+        expr: sum by (shard) (increase(pulsegrid_worker_alerts_dropped_total[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alerts were dropped for slow devices"
+          description: "Shard {{ $labels.shard }}: {{ $value | printf \"%.0f\" }} alerts were skipped in the last 10 minutes because a device's queue was full."
+
+      - alert: InvalidAlertMessages
+        expr: increase(pulsegrid_worker_alerts_invalid_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The worker received unparseable alert messages"
+          description: "{{ $value | printf \"%.0f\" }} messages from NATS could not be parsed in the last 10 minutes. A version mismatch between coordinator and worker is the usual cause."
+
+      - alert: ReplayFailures
+        expr: increase(pulsegrid_worker_replay_failures_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reconnect replays are failing"
+          description: "{{ $value | printf \"%.0f\" }} replays for reconnecting devices could not complete in the last 15 minutes. Devices may be missing alerts sent while they were offline."
+
+  - name: pulsegrid-latency
+    rules:
+      - alert: SlowAlertDispatch
+        expr: histogram_quantile(0.99, sum by (le) (rate(pulsegrid_alert_dispatch_duration_seconds_bucket[10m]))) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alert dispatch is slow"
+          description: "p99 time from accepting an alert to publishing it to every shard is {{ $value | printf \"%.2f\" }} s (over 1 s for 10 minutes)."
+
+      - alert: SlowBroadcast
+        expr: histogram_quantile(0.99, sum by (le) (rate(pulsegrid_worker_broadcast_duration_seconds_bucket[10m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fanning an alert out to devices is slow"
+          description: "p99 time to fan one alert out to a shard's sockets is {{ $value | printf \"%.2f\" }} s (over 0.5 s for 10 minutes). The worker may be overloaded."
+
+      - alert: SlowHttpResponses
+        expr: histogram_quantile(0.99, sum by (le) (rate(pulsegrid_http_request_duration_seconds_bucket[10m]))) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The coordinator is answering slowly"
+          description: "p99 HTTP response time is {{ $value | printf \"%.2f\" }} s (over 2 s for 10 minutes). Check Postgres."
+
+      - alert: WebSocketRejectSpike
+        expr: sum(increase(pulsegrid_ws_rejects_total[10m])) > 100
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many WebSocket connections are being refused"
+          description: "{{ $value | printf \"%.0f\" }} WebSocket connections were refused in the last 10 minutes (bad tickets, rate limits or unavailable shards). Could be an attack or a client bug."

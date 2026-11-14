@@ -97,7 +97,55 @@ services:
       WORKER_PUBLIC_URL: wss://${WS_DOMAIN:?set WS_DOMAIN in .env.docker}
     logging: *default-logging
 
+  # Monitoring. Prometheus scrapes the services over the Compose network
+  # (their /metrics is hidden from the internet by Caddy) and Alertmanager
+  # sends the alerts to Telegram (deploy/alertmanager/alertmanager.yml).
+  # Both UIs listen on 127.0.0.1 of the server only: reach them with
+  #   ssh -L 9090:localhost:9090 -L 9093:localhost:9093 <user>@<server>
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    depends_on:
+      - alertmanager
+      - api-coordinator
+      - fanout-worker
+    logging: *default-logging
+
+  alertmanager:
+    image: prom/alertmanager:v0.35.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanagerdata:/alertmanager
+    secrets:
+      - telegram_bot_token
+    logging: *default-logging
+
+# The bot token is read from a file that is not in git (see
+# deploy/alertmanager/alertmanager.yml). Compose needs the file to exist for
+# every command, so create it before the first one.
+secrets:
+  telegram_bot_token:
+    file: ./deploy/secrets/telegram_bot_token
+
 volumes:
   caddy_data:
   caddy_config:
   redisdata:
+  promdata:
+  alertmanagerdata:
