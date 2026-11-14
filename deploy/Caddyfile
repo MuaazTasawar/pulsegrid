@@ -1,0 +1,78 @@
+# Edge proxy for production: TLS, hardening and routing in front of the
+# coordinator and the fanout-worker. Used by docker-compose.prod.yml.
+#
+#   API_DOMAIN  public name of the coordinator and the dashboard (e.g. api.example.com)
+#   WS_DOMAIN   public name devices open their WebSocket on (e.g. ws.example.com);
+#               it must equal the host in the worker's WORKER_PUBLIC_URL (wss://...)
+#   ACME_EMAIL  contact address for the Let's Encrypt account
+#
+# Both names must have DNS records pointing at this server, and ports 80 and
+# 443 must be reachable, or certificate issuance fails.
+{
+	email {$ACME_EMAIL}
+}
+
+# Paths that are only for operators and monitoring. The services expose them
+# on the same port as the public API, so the edge hides them (404). Health
+# checks inside Docker and Caddy's own upstream checks reach them directly,
+# not through this edge.
+(hardening) {
+	@internal path /metrics /metrics/* /ready /admin /admin/*
+	respond @internal 404
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+}
+
+# JSON access log on stdout without secrets: credentials are removed from
+# the logged headers and the one-time WebSocket ticket from the URL.
+(accesslog) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>headers>Authorization delete
+				request>headers>X-Api-Key delete
+				request>headers>Cookie delete
+				request>uri query {
+					replace ticket REDACTED
+				}
+			}
+		}
+	}
+}
+
+{$API_DOMAIN} {
+	import hardening
+	import accesslog
+
+	request_body {
+		max_size 1MB
+	}
+	encode zstd gzip
+
+	reverse_proxy api-coordinator:8090 {
+		# The dashboard stream is Server-Sent Events: never buffer it.
+		flush_interval -1
+		health_uri /ready
+		health_interval 10s
+		health_timeout 3s
+	}
+}
+
+{$WS_DOMAIN} {
+	import hardening
+	import accesslog
+
+	# Caddy upgrades and proxies WebSockets without extra settings.
+	reverse_proxy fanout-worker:8081 {
+		health_uri /ready
+		health_interval 10s
+		health_timeout 3s
+	}
+}

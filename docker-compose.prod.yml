@@ -1,0 +1,92 @@
+# Production overlay: TLS edge, nothing but 80/443 exposed, production
+# settings. Use it on a server that has DNS records for API_DOMAIN and
+# WS_DOMAIN (see deploy/PRODUCTION.md):
+#
+#   docker compose --env-file .env.docker \
+#       -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# --env-file matters: Compose reads ${...} values below from it, and the app
+# services read the same file through `env_file`. Required values that are
+# missing stop the start with a message instead of silently using a default.
+#
+# Do not combine it with docker-compose.scale.yml (the benchmark harness).
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env.docker}
+      WS_DOMAIN: ${WS_DOMAIN:?set WS_DOMAIN in .env.docker}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env.docker}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # certificates: keep this volume, or issuance restarts from zero
+      - caddy_config:/config
+    depends_on:
+      - api-coordinator
+      - fanout-worker
+    logging: *default-logging
+
+  # The three data stores are reachable only on the Compose network.
+  postgres:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.docker}
+    logging: *default-logging
+
+  redis:
+    restart: unless-stopped
+    ports: !reset []
+    # Persist to disk: ack cursors and device locations survive a restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    logging: *default-logging
+
+  nats:
+    restart: unless-stopped
+    ports: !reset []
+    logging: *default-logging
+
+  # The app services have no published ports: Caddy is the only way in. That
+  # is also what makes TRUST_PROXY_HEADERS safe (clients cannot reach the
+  # services directly to forge X-Forwarded-For).
+  api-coordinator:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      PULSEGRID_ENV: production
+      TRUST_PROXY_HEADERS: "true"
+      RATE_LIMIT_DISABLED: "false"
+      DATABASE_URL: postgres://pulsegrid:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.docker}@postgres:5432/pulsegrid
+    logging: *default-logging
+
+  fanout-worker:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      PULSEGRID_ENV: production
+      TRUST_PROXY_HEADERS: "true"
+      RATE_LIMIT_DISABLED: "false"
+      DATABASE_URL: postgres://pulsegrid:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.docker}@postgres:5432/pulsegrid
+      # The address the coordinator hands to devices: it must be the public
+      # TLS name served by Caddy, not localhost.
+      WORKER_PUBLIC_URL: wss://${WS_DOMAIN:?set WS_DOMAIN in .env.docker}
+    logging: *default-logging
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redisdata:
