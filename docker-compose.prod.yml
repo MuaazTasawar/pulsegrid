@@ -1,13 +1,19 @@
 # Production overlay: TLS edge, nothing but 80/443 exposed, production
-# settings. Use it on a server that has DNS records for API_DOMAIN and
-# WS_DOMAIN (see deploy/PRODUCTION.md):
+# settings, and the application image pulled from the registry (CI builds and
+# publishes it; the server never compiles). Use it on a server that has DNS
+# records for API_DOMAIN and WS_DOMAIN (see deploy/PRODUCTION.md):
 #
-#   docker compose --env-file .env.docker \
-#       -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#   COMPOSE="docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml"
+#   $COMPOSE pull
+#   $COMPOSE up -d --no-build
 #
-# --env-file matters: Compose reads ${...} values below from it, and the app
-# services read the same file through `env_file`. Required values that are
-# missing stop the start with a message instead of silently using a default.
+# Every command needs --env-file: Compose reads the ${...} values below from
+# it (even for `logs` or `ps`), and the app services read the same file
+# through `env_file`. Required values that are missing stop the command with
+# a message instead of silently using a default.
+#
+# To build the image on this machine instead (for example to rehearse
+# locally), use `up -d --build`; it tags the result with the same name.
 #
 # Do not combine it with docker-compose.scale.yml (the benchmark harness).
 
@@ -60,10 +66,14 @@ services:
     ports: !reset []
     logging: *default-logging
 
+  # Both services run the same image; the command from docker-compose.yml
+  # picks the binary. PULSEGRID_VERSION (in .env.docker) pins a build, e.g.
+  # sha-95b5948, and defaults to the newest main.
   # The app services have no published ports: Caddy is the only way in. That
   # is also what makes TRUST_PROXY_HEADERS safe (clients cannot reach the
   # services directly to forge X-Forwarded-For).
   api-coordinator:
+    image: ghcr.io/muaaztasawar/pulsegrid:${PULSEGRID_VERSION:-latest}
     restart: unless-stopped
     ports: !reset []
     environment:
@@ -74,6 +84,7 @@ services:
     logging: *default-logging
 
   fanout-worker:
+    image: ghcr.io/muaaztasawar/pulsegrid:${PULSEGRID_VERSION:-latest}
     restart: unless-stopped
     ports: !reset []
     environment:
