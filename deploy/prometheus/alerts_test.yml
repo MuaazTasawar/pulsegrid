@@ -133,3 +133,141 @@ tests:
       - eval_time: 25m
         alertname: SlowAlertDispatch
         exp_alerts: []
+
+  - name: server error rate above five percent for five minutes
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_http_requests_total{job="api-coordinator", status="2xx"}'
+        values: "0+10x30"
+      - series: 'pulsegrid_http_requests_total{job="api-coordinator", status="5xx"}'
+        values: "0+2x30"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HighServerErrorRate
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: HighServerErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "The coordinator is returning server errors"
+              description: "16.67% of HTTP responses were 5xx over the last 5 minutes. Check the coordinator log and Postgres."
+
+  - name: a healthy coordinator with no 5xx series stays quiet
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_http_requests_total{job="api-coordinator", status="2xx"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HighServerErrorRate
+        exp_alerts: []
+
+  - name: backup too old
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_backup_interval_seconds{job="backup"}'
+        values: "3600x200"
+      # the newest good dump was made at second 100 and nothing since
+      - series: 'pulsegrid_backup_last_success_timestamp_seconds{job="backup"}'
+        values: "100x200"
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: BackupMissing
+        exp_alerts: [] # 59 minutes old: well inside 1.5 intervals
+      - eval_time: 120m
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+            exp_annotations:
+              summary: "No recent database backup"
+              description: "The newest verified dump is 1h 58m 20s old, which is more than 1.5 backup intervals. Read the backup container's log."
+
+  - name: backups arriving on time stay quiet
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_backup_interval_seconds{job="backup"}'
+        values: "3600x200"
+      # a fresh dump every minute: the timestamp equals the current time
+      - series: 'pulsegrid_backup_last_success_timestamp_seconds{job="backup"}'
+        values: "0+60x200"
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: BackupMissing
+        exp_alerts: []
+
+  - name: failing backups alert after thirty minutes
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_backup_last_run_success{job="backup"}'
+        values: "1 1 0x60"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BackupFailing
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: BackupFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+            exp_annotations:
+              summary: "Database backups are failing"
+              description: "Every dump attempt for the last 30 minutes failed (it retries every 15 minutes). Read the backup container's log."
+
+  - name: a stale off-server copy alerts only when off-site copies are enabled
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_backup_interval_seconds{job="backup"}'
+        values: "3600x200"
+      - series: 'pulsegrid_backup_offsite_enabled{job="backup"}'
+        values: "1x200"
+      - series: 'pulsegrid_backup_offsite_last_success_timestamp_seconds{job="backup"}'
+        values: "100x200"
+    alert_rule_test:
+      - eval_time: 120m
+        alertname: OffsiteBackupMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+            exp_annotations:
+              summary: "Backups are not reaching the off-server copy"
+              description: "The last successful off-server copy is 1h 58m 20s old. A server failure now would lose the backups too. Check the remote and the rclone settings."
+
+  - name: no off-server alert when off-site copies are switched off
+    interval: 1m
+    input_series:
+      - series: 'pulsegrid_backup_interval_seconds{job="backup"}'
+        values: "3600x200"
+      - series: 'pulsegrid_backup_offsite_enabled{job="backup"}'
+        values: "0x200"
+      - series: 'pulsegrid_backup_offsite_last_success_timestamp_seconds{job="backup"}'
+        values: "0x200"
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: OffsiteBackupMissing
+        exp_alerts: []
+
+  - name: a backup container that stops answering alerts after five minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="backup", instance="backup:9187"}'
+        values: "1 1 0x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: BackupServiceDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: BackupServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: "backup:9187"
+            exp_annotations:
+              summary: "The backup service is not running"
+              description: "Prometheus cannot reach the backup container, so no backups are being made."

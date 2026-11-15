@@ -27,6 +27,13 @@ scrape_configs:
     static_configs:
       - targets: ["fanout-worker:8081"]
 
+  # The backup service publishes its own health (see deploy/backup/backup.sh).
+  - job_name: backup
+    metrics_path: /metrics.txt
+    fallback_scrape_protocol: PrometheusText0.0.4
+    static_configs:
+      - targets: ["backup:9187"]
+
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]

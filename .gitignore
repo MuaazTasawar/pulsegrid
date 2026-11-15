@@ -8,3 +8,6 @@ secrets/
 .vscode/
 
 deploy/secrets/
+
+backups/
+deploy/rclone/rclone.conf

@@ -97,6 +97,31 @@ services:
       WORKER_PUBLIC_URL: wss://${WS_DOMAIN:?set WS_DOMAIN in .env.docker}
     logging: *default-logging
 
+  # Daily database dumps (deploy/backup/backup.sh), kept in ./backups on the
+  # server and optionally copied off it. Its health is scraped by Prometheus.
+  # To restore, see deploy/PRODUCTION.md ("Backups").
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/backup/backup.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: pulsegrid
+      PGDATABASE: pulsegrid
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.docker}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      OFFSITE_REMOTE: ${BACKUP_OFFSITE_REMOTE:-}
+      OFFSITE_KEEP_DAYS: ${OFFSITE_KEEP_DAYS:-60}
+    volumes:
+      - ./deploy/backup:/backup:ro
+      - ./deploy/rclone:/rclone:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+
   # Monitoring. Prometheus scrapes the services over the Compose network
   # (their /metrics is hidden from the internet by Caddy) and Alertmanager
   # sends the alerts to Telegram (deploy/alertmanager/alertmanager.yml).

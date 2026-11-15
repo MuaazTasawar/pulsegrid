@@ -172,7 +172,11 @@ $COMPOSE exec alertmanager amtool alert add TestAlert severity=warning \
 | InvalidAlertMessages | warning | The worker cannot parse alerts: usually a coordinator/worker version mismatch. |
 | ReplayFailures | warning | Reconnecting devices may be missing alerts they were offline for. |
 | SlowAlertDispatch, SlowBroadcast, SlowHttpResponses | warning | p99 latency is high for 10 minutes. |
+| HighServerErrorRate | warning | More than 5% of the coordinator's HTTP responses were 5xx for 5 minutes. |
 | WebSocketRejectSpike | warning | Over 100 refused WebSocket connections in 10 minutes. |
+| BackupMissing, BackupFailing | critical | No verified dump for 1.5 intervals, or every attempt for 30 minutes failed. |
+| OffsiteBackupMissing | critical | Off-server copies are enabled but the last successful one is over 1.5 intervals old. |
+| BackupServiceDown | critical | The backup container cannot be reached, so nothing is being backed up. |
 
 Critical alerts repeat every hour until fixed, warnings every four hours.
 
@@ -186,6 +190,87 @@ docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
 ```
 
 Then `$COMPOSE restart prometheus`.
+
+## Backups
+
+The `backup` service dumps the database every 24 hours, checks that the dump
+can be read back, keeps it in `./backups` on the server (the `BACKUP_DIR`
+setting) and deletes dumps older than 14 days, but never the newest three.
+Files are named `pulsegrid-<UTC time>.dump`. Restarting the stack or
+deploying does not cause an extra dump. Prometheus watches it: alerts fire if
+dumps stop, fail, or stop reaching the off-server copy. The service serves
+its metrics with a tiny web server (it installs `busybox-extras` when the
+image lacks one, so it needs internet access at start); if that cannot
+start, backups carry on and `BackupServiceDown` fires.
+
+**What is in a backup, and what is not**
+
+- In: the Postgres database, i.e. registered devices with their locations and
+  the alert history.
+- Not in it: **`.env.docker`**, which holds the secrets. Keep a copy in a
+  password manager. Without the original `JWT_SECRET`, every device token
+  stops working and devices have to register again.
+- Not backed up on purpose: Redis (tickets, shard leases, presence,
+  acknowledgement cursors) rebuilds itself, and a lost cursor can only make a
+  reconnecting device see a few alerts again. The NATS alert stream holds one
+  hour by design. Caddy's certificates are re-issued automatically.
+
+**Without an off-server copy a dead server takes the backups with it.** Set
+one up as soon as the stack runs:
+
+1. Define a storage remote with `rclone config` on any machine (S3,
+   Backblaze B2, SFTP, Google Drive, ...). Then add a second remote of type
+   `crypt` on top of it. The dumps contain device locations, and `crypt`
+   encrypts them before they leave the server. Keep the crypt password
+   somewhere other than the server: without it the copies cannot be read.
+2. Copy the resulting file to `deploy/rclone/rclone.conf` on the server
+   (`chmod 600`; it is git-ignored).
+3. In `.env.docker` set `BACKUP_OFFSITE_REMOTE=<crypt remote>:pulsegrid`, then
+   `$COMPOSE up -d backup`. The container installs rclone when it starts, so
+   it needs internet access. Dumps are copied (never synced, so wiping the
+   server cannot wipe the copies) and remote dumps older than 60 days
+   (`OFFSITE_KEEP_DAYS`) are deleted.
+
+**A dump right now** (for example before a risky update):
+
+```sh
+$COMPOSE run --rm --no-deps -e BACKUP_RUN_ONCE=1 backup
+```
+
+**Restore drill: do it once now, then every few months.** A backup you have
+never restored is a hope, not a backup. This restores into a scratch database
+and prints a row count for every table, without touching live data:
+
+```sh
+ls -lt backups | head -3                    # pick a file
+$COMPOSE run --rm --no-deps --entrypoint /bin/sh backup \
+    /backup/restore.sh /backups/pulsegrid-<time>.dump
+$COMPOSE exec postgres psql -U pulsegrid -d pulsegrid -Atc "select count(*) from devices"
+$COMPOSE exec postgres psql -U pulsegrid -d postgres -c "DROP DATABASE pulsegrid_restore_test"
+```
+
+The counts should match the live database, give or take what changed since
+the dump was made.
+
+**Disaster recovery** (a new server, or the live database is damaged):
+
+1. On a new server, follow "First start" with the **same** `.env.docker`, but
+   only start the database: `$COMPOSE up -d postgres`.
+2. Put the dump in `./backups` (from the off-server copy: `rclone copy
+   <remote>:pulsegrid ./backups --include 'pulsegrid-*.dump'`, using the
+   crypt remote).
+3. Stop anything using the database: `$COMPOSE stop api-coordinator fanout-worker`.
+4. Replace the live database. This deletes what is in it:
+
+   ```sh
+   $COMPOSE run --rm --no-deps -e RESTORE_CONFIRM=yes --entrypoint /bin/sh backup \
+       /backup/restore.sh /backups/pulsegrid-<time>.dump pulsegrid
+   ```
+
+5. Start everything: `$COMPOSE up -d --no-build`.
+
+You lose at most the interval since the last dump (24 hours by default;
+lower `BACKUP_INTERVAL_HOURS` to shorten that).
 
 ## Messages in the logs that are harmless
 
@@ -236,8 +321,11 @@ check the release's migrations before rolling back across one.
 
 - **High availability.** Each data store runs once; a server or disk failure
   is downtime and can be data loss.
-- **Backups.** Nothing in this overlay copies data off the server. Treat
-  `pgdata` as unprotected until backups exist.
+- **Point-in-time recovery.** Backups are daily dumps; up to a day of
+  changes can be lost. Continuous archiving of the database log is not set up.
+- **An off-server copy by default.** It is optional and off until you
+  configure it (see "Backups"); until then the dumps live on the same
+  server and disk as the data.
 - **Monitoring of the infrastructure.** The application's metrics are
   scraped and alerted on, but Postgres, Redis, NATS, Caddy and the host
   (disk, memory, CPU) have no exporters, so a full disk or a dead

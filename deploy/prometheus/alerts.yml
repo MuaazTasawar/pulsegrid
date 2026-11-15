@@ -117,6 +117,17 @@ groups:
           summary: "The coordinator is answering slowly"
           description: "p99 HTTP response time is {{ $value | printf \"%.2f\" }} s (over 2 s for 10 minutes). Check Postgres."
 
+      - alert: HighServerErrorRate
+        expr: |
+          sum(rate(pulsegrid_http_requests_total{status="5xx"}[5m]))
+            / sum(rate(pulsegrid_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The coordinator is returning server errors"
+          description: "{{ $value | humanizePercentage }} of HTTP responses were 5xx over the last 5 minutes. Check the coordinator log and Postgres."
+
       - alert: WebSocketRejectSpike
         expr: sum(increase(pulsegrid_ws_rejects_total[10m])) > 100
         labels:
@@ -124,3 +135,41 @@ groups:
         annotations:
           summary: "Many WebSocket connections are being refused"
           description: "{{ $value | printf \"%.0f\" }} WebSocket connections were refused in the last 10 minutes (bad tickets, rate limits or unavailable shards). Could be an attack or a client bug."
+
+  - name: pulsegrid-backup
+    rules:
+      - alert: BackupMissing
+        expr: time() - pulsegrid_backup_last_success_timestamp_seconds > 1.5 * pulsegrid_backup_interval_seconds
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No recent database backup"
+          description: "The newest verified dump is {{ $value | humanizeDuration }} old, which is more than 1.5 backup intervals. Read the backup container's log."
+
+      - alert: BackupFailing
+        expr: pulsegrid_backup_last_run_success == 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database backups are failing"
+          description: "Every dump attempt for the last 30 minutes failed (it retries every 15 minutes). Read the backup container's log."
+
+      - alert: OffsiteBackupMissing
+        expr: (time() - pulsegrid_backup_offsite_last_success_timestamp_seconds > 1.5 * pulsegrid_backup_interval_seconds) and on() (pulsegrid_backup_offsite_enabled == 1)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backups are not reaching the off-server copy"
+          description: "The last successful off-server copy is {{ $value | humanizeDuration }} old. A server failure now would lose the backups too. Check the remote and the rclone settings."
+
+      - alert: BackupServiceDown
+        expr: up{job="backup"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The backup service is not running"
+          description: "Prometheus cannot reach the backup container, so no backups are being made."
