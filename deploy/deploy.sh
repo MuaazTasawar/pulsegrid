@@ -15,7 +15,9 @@
 #      tag or a registry problem changes nothing and causes no downtime;
 #   4. records the version in .env.docker and restarts with `up -d --no-build`;
 #   5. waits until the coordinator and the worker answer /ready;
-#   6. checks the public side (/health answers 200, /metrics is hidden);
+#   6. checks the public side (/health answers 200, /metrics is hidden); it
+#      retries for up to DEPLOY_PUBLIC_TIMEOUT seconds (90) because Caddy
+#      needs a moment to obtain certificates after a start;
 #   7. if step 5 fails, puts the previous version back and checks it again.
 #
 # Exit codes: 0 deployed and checked; 1 failed (nothing changed, or rolled back
@@ -34,6 +36,9 @@ STATE_FILE="${DEPLOY_STATE_FILE:-.deploy-state}"
 HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-120}"
 HEALTH_INTERVAL="${DEPLOY_HEALTH_INTERVAL:-3}"
 [ "$HEALTH_INTERVAL" -ge 1 ] 2>/dev/null || HEALTH_INTERVAL=1
+PUBLIC_TIMEOUT="${DEPLOY_PUBLIC_TIMEOUT:-90}"
+PUBLIC_INTERVAL="${DEPLOY_PUBLIC_INTERVAL:-3}"
+[ "$PUBLIC_INTERVAL" -ge 1 ] 2>/dev/null || PUBLIC_INTERVAL=1
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.yml -f docker-compose.prod.yml)
 
 TARGET="" DO_BACKUP=1 DRY_RUN=0 GIT_PULL=0 ROLLBACK=0
@@ -106,16 +111,25 @@ wait_healthy() {
   done
 }
 
-# From the outside: /health must answer and /metrics must stay hidden.
+# From the outside: /health must answer and /metrics must stay hidden. Right
+# after a start (or on a new domain) Caddy is still obtaining its certificates
+# and refuses HTTPS connections, so /health is retried for a while first.
 public_checks() {
   command -v curl >/dev/null 2>&1 || { log "curl not found, skipping the public checks"; return 0; }
-  local domain code bad=0 insecure=()
+  local domain code waited=0 bad=0 insecure=()
   domain=$(get_var API_DOMAIN)
   [ -n "$domain" ] || domain=${API_DOMAIN:-}
   case "$domain" in localhost | *.localhost) insecure=(-k) ;; esac
-  code=$(curl -sS ${insecure[@]+"${insecure[@]}"} -o /dev/null -w '%{http_code}' --max-time 10 "https://$domain/health" || true)
-  if [ "$code" = 200 ]; then log "public check ok: /health 200"; else log "WARNING: https://$domain/health answered '${code:-nothing}' (expected 200)"; bad=1; fi
-  code=$(curl -sS ${insecure[@]+"${insecure[@]}"} -o /dev/null -w '%{http_code}' --max-time 10 "https://$domain/metrics" || true)
+  while :; do
+    code=$(curl -s ${insecure[@]+"${insecure[@]}"} -o /dev/null -w '%{http_code}' --max-time 10 "https://$domain/health" 2>/dev/null || true)
+    [ "$code" = 200 ] && break
+    [ "$waited" -lt "$PUBLIC_TIMEOUT" ] || break
+    [ "$waited" -gt 0 ] || log "waiting for HTTPS on $domain (Caddy may still be getting its certificates; up to ${PUBLIC_TIMEOUT}s)"
+    sleep "$PUBLIC_INTERVAL"
+    waited=$((waited + PUBLIC_INTERVAL))
+  done
+  if [ "$code" = 200 ]; then log "public check ok: /health 200"; else log "WARNING: https://$domain/health answered '${code:-nothing}' for ${waited}s (expected 200); check DNS, ports 80/443 and the Caddy log"; bad=1; fi
+  code=$(curl -s ${insecure[@]+"${insecure[@]}"} -o /dev/null -w '%{http_code}' --max-time 10 "https://$domain/metrics" 2>/dev/null || true)
   if [ "$code" = 404 ]; then log "public check ok: /metrics hidden (404)"; else log "WARNING: https://$domain/metrics answered '${code:-nothing}' but must be hidden (404)"; bad=1; fi
   return "$bad"
 }

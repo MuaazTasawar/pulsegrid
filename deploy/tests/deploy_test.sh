@@ -40,7 +40,10 @@ cat > "$T/bin/curl" <<'SHIM'
 #!/usr/bin/env bash
 url="${@: -1}"
 case "$url" in
-  */health) echo -n "${FAKE_CURL_HEALTH:-200}" ;;
+  */health)
+    # the first FAKE_CURL_HEALTH_FAILS calls fail like a Caddy that has no certificate yet
+    n=$(cat "$FAKE_CURL_COUNT" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_CURL_COUNT"
+    if [ "$n" -lt "${FAKE_CURL_HEALTH_FAILS:-0}" ]; then echo -n 000; else echo -n "${FAKE_CURL_HEALTH:-200}"; fi ;;
   */metrics) echo -n "${FAKE_CURL_METRICS:-404}" ;;
 esac
 SHIM
@@ -48,12 +51,13 @@ printf '#!/usr/bin/env bash\necho "git $*" >> "$FAKE_LOG"; exit 0\n' > "$T/bin/g
 chmod +x "$T/bin/docker" "$T/bin/curl" "$T/bin/git"
 
 export PATH=$T/bin:$PATH FAKE_LOG=$T/calls.log FAKE_ENV=$T/repo/.env.docker
-export DEPLOY_HEALTH_TIMEOUT=2 DEPLOY_HEALTH_INTERVAL=1
+export DEPLOY_HEALTH_TIMEOUT=2 DEPLOY_HEALTH_INTERVAL=1 DEPLOY_PUBLIC_TIMEOUT=3 DEPLOY_PUBLIC_INTERVAL=1
+export FAKE_CURL_COUNT=$T/curl_count
 reset() {  # fresh settings file and state for each test
   cd $T/repo
   printf '# comment\nAPI_DOMAIN=api.example.com\nWS_DOMAIN=ws.example.com\nACME_EMAIL=ops@example.com\nPOSTGRES_PASSWORD=s3cret-pw\nJWT_SECRET=very-secret-jwt\n# PULSEGRID_VERSION=latest\nPULSEGRID_VERSION=sha-1111111\nOTHER=keep-me\n' > .env.docker
-  chmod 600 .env.docker; rm -f .deploy-state $T/calls.log; touch $T/calls.log
-  unset FAKE_RUNNING FAKE_BACKUP_FAIL FAKE_BAD_TAG FAKE_UNHEALTHY FAKE_CURL_HEALTH FAKE_CURL_METRICS
+  chmod 600 .env.docker; rm -f .deploy-state $T/calls.log $T/curl_count; touch $T/calls.log
+  unset FAKE_RUNNING FAKE_BACKUP_FAIL FAKE_BAD_TAG FAKE_UNHEALTHY FAKE_CURL_HEALTH FAKE_CURL_METRICS FAKE_CURL_HEALTH_FAILS
 }
 
 PASS=0; FAILN=0; ALLOUT=$T/all-output.txt; : > $ALLOUT
@@ -190,6 +194,20 @@ check '[ $RC -eq 1 ] && echo "$OUT" | grep -q "API_DOMAIN is not set"' "missing 
 API_DOMAIN=api.example.com POSTGRES_PASSWORD=from-env D --version sha-2222222
 check '[ $RC -eq 0 ] && [ "$(ver)" = sha-2222222 ]' "values from the environment are accepted"
 check 'echo "$OUT" | grep -q "public check ok: /health 200"' "the public check used the domain from the environment"
+
+echo "--- T19 HTTPS not ready yet (Caddy still getting certificates): retried, then fine"
+reset; export FAKE_RUNNING=postgres FAKE_CURL_HEALTH_FAILS=2
+D --version sha-2222222
+check '[ $RC -eq 0 ]' "exit 0 instead of a false alarm"
+check 'echo "$OUT" | grep -q "waiting for HTTPS" && echo "$OUT" | grep -q "public check ok: /health 200"' "said it was waiting, then confirmed /health"
+check '[ "$(cat $FAKE_CURL_COUNT)" -ge 3 ]' "/health was asked at least three times"
+
+echo "--- T20 HTTPS never comes up: warns after the wait, deploy stands"
+reset; export FAKE_RUNNING=postgres FAKE_CURL_HEALTH=000
+D --version sha-2222222
+check '[ $RC -eq 2 ] && [ "$(ver)" = sha-2222222 ]' "exit 2, new version kept"
+check 'echo "$OUT" | grep -q "answered .000. for [1-9][0-9]*s"' "the warning says how long it waited"
+check 'echo "$OUT" | grep -q "DNS, ports 80/443"' "and where to look"
 
 echo; echo "RESULT: $PASS passed, $FAILN failed"
 [ "$FAILN" -eq 0 ]

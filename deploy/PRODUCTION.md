@@ -326,7 +326,7 @@ problem:
 |---|---|
 | 0 | Deployed, healthy, public checks passed. |
 | 1 | Failed. Either nothing was changed, or the new version was unhealthy and the previous one is running again (the message says which). |
-| 2 | Deployed and healthy, but a public check failed (for example `/metrics` reachable from outside, or DNS and certificates not ready). Look at it now. |
+| 2 | Deployed and healthy, but a public check failed (for example `/metrics` reachable from outside, or DNS and certificates not working). The script first waits up to 90 seconds for HTTPS (`DEPLOY_PUBLIC_TIMEOUT`), because Caddy needs a moment to obtain certificates after a start. Look at it now. |
 | 3 | The new version was unhealthy and the automatic rollback was unhealthy too. Fix by hand: `$COMPOSE ps`, `$COMPOSE logs`. |
 
 Other options: `--rollback` (go back to the version before the last deploy;
