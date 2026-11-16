@@ -301,21 +301,50 @@ redirects to HTTPS.
 
 ## Updating and rolling back
 
+One command, run on the server (from any directory):
+
 ```sh
-git pull               # compose and Caddy files; the application is in the image
-# set PULSEGRID_VERSION in .env.docker to the new sha-<short commit>
-$COMPOSE pull
-$COMPOSE up -d --no-build
+deploy/deploy.sh --git-pull --version sha-<short commit>
 ```
 
-To roll back, set `PULSEGRID_VERSION` back to the previous `sha-...` tag and
-run the same two commands. Tags are listed under the repository's Packages on
-GitHub. Volumes (`pgdata`, `natsdata`, `redisdata`, `caddy_data`) survive
-all of this. Do not run `$COMPOSE down -v`: it deletes the data, including
-the certificates.
+Take the tag from the repository's Packages on GitHub, or from the CI run of
+the commit you want. Without `--version` it redeploys the version already in
+`.env.docker`. The script does these steps in order and stops at the first
+problem:
 
-A database migration that has already run is not undone by an older image;
-check the release's migrations before rolling back across one.
+1. checks the settings (it names a missing one, never prints a value) and
+   validates the Compose files;
+2. takes a database backup (skipped on a first deploy, when nothing runs);
+3. pulls the new image **before** touching anything running, so a wrong tag
+   or a registry problem changes nothing and costs no downtime;
+4. records the version in `.env.docker` and restarts;
+5. waits until the coordinator and the worker answer `/ready`;
+6. checks from the outside that `/health` answers and `/metrics` is hidden;
+7. if step 5 fails, puts the previous version back and checks that again.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Deployed, healthy, public checks passed. |
+| 1 | Failed. Either nothing was changed, or the new version was unhealthy and the previous one is running again (the message says which). |
+| 2 | Deployed and healthy, but a public check failed (for example `/metrics` reachable from outside, or DNS and certificates not ready). Look at it now. |
+| 3 | The new version was unhealthy and the automatic rollback was unhealthy too. Fix by hand: `$COMPOSE ps`, `$COMPOSE logs`. |
+
+Other options: `--rollback` (go back to the version before the last deploy;
+it is remembered in `.deploy-state`), `--no-backup`, and `--dry-run` (print
+the plan, change nothing). `deploy/deploy.sh --help` lists them.
+
+Volumes (`pgdata`, `natsdata`, `redisdata`, `caddy_data`, `promdata`)
+survive all of this. Do not run `$COMPOSE down -v`: it deletes the data,
+including the certificates.
+
+A database migration that has already run is not undone by an older image.
+Before rolling back across a release that added a migration, check what it
+changed; the backup the script took first is your way back.
+
+CI checks all of these deployment files on every push (job "Deployment
+files"): shell scripts with shellcheck, the deploy script against a fake
+Docker, the Compose files, the Caddyfile, the Prometheus config, the alert
+rules and their tests, and the Alertmanager config.
 
 ## What this does not give you
 

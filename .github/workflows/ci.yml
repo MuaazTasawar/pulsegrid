@@ -62,6 +62,55 @@ jobs:
       - name: Integration tests
         run: cargo test -p integration-tests
 
+  deploy-files:
+    name: Deployment files
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Keep these image tags in step with docker-compose.prod.yml.
+    env:
+      PROMETHEUS_IMAGE: prom/prometheus:v3.16.0
+      ALERTMANAGER_IMAGE: prom/alertmanager:v0.35.0
+      CADDY_IMAGE: caddy:2-alpine
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts pass shellcheck
+        run: |
+          shellcheck -s sh deploy/backup/backup.sh deploy/backup/restore.sh
+          shellcheck -s bash deploy/deploy.sh deploy/tests/deploy_test.sh
+      - name: Deploy script tests (against a fake docker)
+        run: bash deploy/tests/deploy_test.sh
+      - name: Compose files validate
+        env:
+          API_DOMAIN: api.example.com
+          WS_DOMAIN: ws.example.com
+          ACME_EMAIL: ops@example.com
+          POSTGRES_PASSWORD: ci-only
+        run: |
+          cp .env.docker.example .env.docker
+          mkdir -p deploy/secrets
+          echo dummy > deploy/secrets/telegram_bot_token
+          docker compose -f docker-compose.yml config -q
+          docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml config -q
+          docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.scale.yml config -q
+      - name: Caddyfile validates
+        run: |
+          docker run --rm \
+            -e API_DOMAIN=api.example.com -e WS_DOMAIN=ws.example.com -e ACME_EMAIL=ops@example.com \
+            -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            "$CADDY_IMAGE" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Prometheus config, alert rules and the rule tests
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" \
+            --entrypoint promtool "$PROMETHEUS_IMAGE" check config /etc/prometheus/prometheus.yml
+          docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" \
+            --entrypoint promtool "$PROMETHEUS_IMAGE" test rules /etc/prometheus/alerts_test.yml
+      - name: Alertmanager config validates
+        run: |
+          docker run --rm \
+            -v "$PWD/deploy/alertmanager:/c:ro" \
+            -v "$PWD/deploy/secrets/telegram_bot_token:/run/secrets/telegram_bot_token:ro" \
+            --entrypoint amtool "$ALERTMANAGER_IMAGE" check-config /c/alertmanager.yml
+
   docker:
     name: Docker image builds
     # A release build takes many minutes, so it runs on main only. It also

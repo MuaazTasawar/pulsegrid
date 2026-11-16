@@ -11,3 +11,5 @@ deploy/secrets/
 
 backups/
 deploy/rclone/rclone.conf
+
+.deploy-state
