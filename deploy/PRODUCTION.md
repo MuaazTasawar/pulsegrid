@@ -131,8 +131,9 @@ from `WS_DOMAIN`), an alert, and the delivery report, all through Caddy.
 
 ## Monitoring and alerts
 
-Prometheus scrapes the coordinator and the worker every 15 seconds and keeps
-30 days of history. Alertmanager groups the alerts and sends them to
+Prometheus scrapes the coordinator, the worker, the backup service and three
+infrastructure exporters (the host's disk and memory, Postgres, Redis) every
+15 seconds and keeps 30 days of history. Alertmanager groups the alerts and sends them to
 Telegram. Both web pages are reachable only from the server itself; from your
 own machine use an SSH tunnel and open `http://localhost:9090` (Prometheus:
 Alerts and Targets pages) and `http://localhost:9093` (Alertmanager):
@@ -177,8 +178,37 @@ $COMPOSE exec alertmanager amtool alert add TestAlert severity=warning \
 | BackupMissing, BackupFailing | critical | No verified dump for 1.5 intervals, or every attempt for 30 minutes failed. |
 | OffsiteBackupMissing | critical | Off-server copies are enabled but the last successful one is over 1.5 intervals old. |
 | BackupServiceDown | critical | The backup container cannot be reached, so nothing is being backed up. |
+| HostDiskSpaceLow, HostDiskFillingUp | warning | Under 15% of the server's disk is free, or at the current rate it will be full within a day. |
+| HostDiskSpaceCritical | critical | Under 5% free: Postgres, the backups and the logs are about to fail. Free space now. |
+| HostMemoryLow | warning | Under 10% of the server's memory has been available for 10 minutes. |
+| PostgresDown, RedisDown | critical | The exporter cannot reach the database or Redis. |
+| PostgresConnectionsHigh | warning | More than 80 connections are open (Postgres allows 100 by default). |
+| ExporterDown | warning | An exporter is not answering, so the alerts that depend on it cannot fire. |
 
 Critical alerts repeat every hour until fixed, warnings every four hours.
+
+**Check that every rule has data.** A rule on a metric that does not exist
+never fires and never complains. After the first start, and after changing
+an exporter version, ask Prometheus whether each metric the infrastructure
+rules use exists:
+
+```sh
+for m in node_filesystem_avail_bytes node_filesystem_size_bytes \
+         node_memory_MemAvailable_bytes node_memory_MemTotal_bytes \
+         pg_up pg_stat_database_numbackends redis_up; do
+  printf '%-34s ' "$m"
+  $COMPOSE exec -T prometheus wget -qO- "http://localhost:9090/api/v1/query?query=count($m)" |
+    grep -q '"result":\[\]' && echo MISSING || echo ok
+done
+# the disk rules also need the root filesystem under its own label:
+$COMPOSE exec -T prometheus wget -qO- \
+  'http://localhost:9090/api/v1/query?query=count(node_filesystem_avail_bytes%7Bmountpoint%3D%22%2F%22%7D)'
+```
+
+Every line should say `ok`, and the last command should show a `"value"`, not
+an empty `"result":[]`. If one says `MISSING`, that exporter's metric is named
+differently in your version: look at its list with the exporter's own
+`/metrics` page and correct the rule.
 
 **Changing the rules:** edit `deploy/prometheus/alerts.yml`, add or adjust a
 case in `alerts_test.yml` next to it, and run the tests before deploying
@@ -355,12 +385,11 @@ rules and their tests, and the Alertmanager config.
 - **An off-server copy by default.** It is optional and off until you
   configure it (see "Backups"); until then the dumps live on the same
   server and disk as the data.
-- **Monitoring of the infrastructure.** The application's metrics are
-  scraped and alerted on, but Postgres, Redis, NATS, Caddy and the host
-  (disk, memory, CPU) have no exporters, so a full disk or a dead
-  database is noticed only through its effect on the application. There
-  is also no "heartbeat" from outside: if the whole server dies,
-  nothing is left to send the alert.
+- **Monitoring of NATS and Caddy.** The host's disk and memory, Postgres and
+  Redis are monitored through exporters; NATS and Caddy have none, so a
+  failing NATS shows up only through the application alerts (publish
+  failures, no shard subscriptions). There is also no "heartbeat" from
+  outside: if the whole server dies, nothing is left to send the alert.
 - **Authentication on Redis and NATS.** They are safe only because they are
   not published; anything else on the Compose network can reach them.
 - **An operator IP allow-list.** The alert and dashboard endpoints are open

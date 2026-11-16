@@ -173,3 +173,77 @@ groups:
         annotations:
           summary: "The backup service is not running"
           description: "Prometheus cannot reach the backup container, so no backups are being made."
+
+  - name: pulsegrid-infrastructure
+    rules:
+      - alert: ExporterDown
+        expr: up{job=~"node-exporter|postgres-exporter|redis-exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A monitoring exporter is not answering"
+          description: "Prometheus cannot scrape {{ $labels.job }}. Until it is back, the host, Postgres or Redis alerts below cannot fire."
+
+      - alert: HostDiskSpaceLow
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The server's disk is getting full"
+          description: "Only {{ $value | humanizePercentage }} of the disk is free. Dumps, the database and logs all live on it."
+
+      - alert: HostDiskSpaceCritical
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The server's disk is almost full"
+          description: "Only {{ $value | humanizePercentage }} of the disk is free. Postgres, the backups and the logs are about to fail. Free space now."
+
+      - alert: HostDiskFillingUp
+        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[6h], 24 * 3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The disk is on course to fill within a day"
+          description: "At the rate of the last 6 hours the disk is full in under 24 hours."
+
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The server is short of memory"
+          description: "Only {{ $value | humanizePercentage }} of memory is available. The kernel may start killing processes."
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres is not reachable"
+          description: "The Postgres exporter cannot connect to the database. Nothing can register or send alerts."
+
+      - alert: PostgresConnectionsHigh
+        expr: sum(pg_stat_database_numbackends) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres is close to its connection limit"
+          description: "{{ $value | printf \"%.0f\" }} connections are open; Postgres allows 100 by default. Requests will start to fail."
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is not reachable"
+          description: "The Redis exporter cannot connect. Tickets, shard leases and presence depend on it."

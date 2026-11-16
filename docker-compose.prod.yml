@@ -144,6 +144,9 @@ services:
       - alertmanager
       - api-coordinator
       - fanout-worker
+      - node-exporter
+      - postgres-exporter
+      - redis-exporter
     logging: *default-logging
 
   alertmanager:
@@ -159,6 +162,39 @@ services:
       - alertmanagerdata:/alertmanager
     secrets:
       - telegram_bot_token
+    logging: *default-logging
+
+  # Infrastructure exporters for Prometheus. None of them publishes a port: they
+  # are reachable on the Compose network only.
+  # node-exporter reads the server's disk and memory (the root of the host is
+  # mounted read-only at /host).
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro
+    logging: *default-logging
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://pulsegrid:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.docker}@postgres:5432/pulsegrid?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.97.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      - redis
     logging: *default-logging
 
 # The bot token is read from a file that is not in git (see

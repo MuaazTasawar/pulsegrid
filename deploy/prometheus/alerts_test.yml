@@ -271,3 +271,171 @@ tests:
             exp_annotations:
               summary: "The backup service is not running"
               description: "Prometheus cannot reach the backup container, so no backups are being made."
+
+  - name: disk below 15 percent warns, below 5 percent is critical
+    interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node-exporter", mountpoint="/"}'
+        values: "100x10 10x30"
+      - series: 'node_filesystem_size_bytes{job="node-exporter", mountpoint="/"}'
+        values: "1000x40"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HostDiskSpaceLow
+        exp_alerts: [] # 10% free is below 15%, but not for the required 10 minutes yet
+      - eval_time: 30m
+        alertname: HostDiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter
+              mountpoint: "/"
+            exp_annotations:
+              summary: "The server's disk is getting full"
+              description: "Only 1% of the disk is free. Dumps, the database and logs all live on it."
+      - eval_time: 30m
+        alertname: HostDiskSpaceCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node-exporter
+              mountpoint: "/"
+            exp_annotations:
+              summary: "The server's disk is almost full"
+              description: "Only 1% of the disk is free. Postgres, the backups and the logs are about to fail. Free space now."
+
+  - name: a disk with plenty of space stays quiet
+    interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node-exporter", mountpoint="/"}'
+        values: "600x40"
+      - series: 'node_filesystem_size_bytes{job="node-exporter", mountpoint="/"}'
+        values: "1000x40"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: HostDiskSpaceLow
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: HostDiskSpaceCritical
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: HostDiskFillingUp
+        exp_alerts: []
+
+  - name: a disk that is draining fast is flagged before it is full
+    interval: 5m
+    input_series:
+      # 500 GB free, losing 40 GB every 5 minutes: gone in well under 24 hours
+      - series: 'node_filesystem_avail_bytes{job="node-exporter", mountpoint="/"}'
+        values: "500+0x0 460 420 380 340 300 260 220 180 140 100 60 20"
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: HostDiskFillingUp
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter
+              mountpoint: "/"
+            exp_annotations:
+              summary: "The disk is on course to fill within a day"
+              description: "At the rate of the last 6 hours the disk is full in under 24 hours."
+
+  - name: low memory for ten minutes
+    interval: 1m
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter"}'
+        values: "500x20 50x30"
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter"}'
+        values: "1000x50"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HostMemoryLow
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: HostMemoryLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter
+            exp_annotations:
+              summary: "The server is short of memory"
+              description: "Only 5% of memory is available. The kernel may start killing processes."
+
+  - name: postgres and redis down alert after two minutes
+    interval: 1m
+    input_series:
+      - series: 'pg_up{job="postgres-exporter", instance="postgres-exporter:9187"}'
+        values: "1 1 0 0 0 0 0 0"
+      - series: 'redis_up{job="redis-exporter", instance="redis-exporter:9121"}'
+        values: "1 1 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PostgresDown
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: PostgresDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: postgres-exporter
+              instance: "postgres-exporter:9187"
+            exp_annotations:
+              summary: "Postgres is not reachable"
+              description: "The Postgres exporter cannot connect to the database. Nothing can register or send alerts."
+      - eval_time: 7m
+        alertname: RedisDown
+        exp_alerts: []
+
+  - name: redis down
+    interval: 1m
+    input_series:
+      - series: 'redis_up{job="redis-exporter", instance="redis-exporter:9121"}'
+        values: "1 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: redis-exporter
+              instance: "redis-exporter:9121"
+            exp_annotations:
+              summary: "Redis is not reachable"
+              description: "The Redis exporter cannot connect. Tickets, shard leases and presence depend on it."
+
+  - name: connections are summed over all databases
+    interval: 1m
+    input_series:
+      - series: 'pg_stat_database_numbackends{job="postgres-exporter", datname="pulsegrid"}'
+        values: "50x10"
+      - series: 'pg_stat_database_numbackends{job="postgres-exporter", datname="postgres"}'
+        values: "35x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PostgresConnectionsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Postgres is close to its connection limit"
+              description: "85 connections are open; Postgres allows 100 by default. Requests will start to fail."
+
+  - name: a silent exporter is itself an alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="node-exporter", instance="node-exporter:9100"}'
+        values: "1 1 0x10"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ExporterDown
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: ExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node-exporter
+              instance: "node-exporter:9100"
+            exp_annotations:
+              summary: "A monitoring exporter is not answering"
+              description: "Prometheus cannot scrape node-exporter. Until it is back, the host, Postgres or Redis alerts below cannot fire."
