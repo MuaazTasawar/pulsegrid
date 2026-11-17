@@ -186,7 +186,7 @@ groups:
           description: "Prometheus cannot scrape {{ $labels.job }}. Until it is back, the host, Postgres or Redis alerts below cannot fire."
 
       - alert: HostDiskSpaceLow
-        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+        expr: node_filesystem_avail_bytes{mountpoint=~"/|/var/lib"} / node_filesystem_size_bytes{mountpoint=~"/|/var/lib"} < 0.15
         for: 10m
         labels:
           severity: warning
@@ -195,7 +195,7 @@ groups:
           description: "Only {{ $value | humanizePercentage }} of the disk is free. Dumps, the database and logs all live on it."
 
       - alert: HostDiskSpaceCritical
-        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.05
+        expr: node_filesystem_avail_bytes{mountpoint=~"/|/var/lib"} / node_filesystem_size_bytes{mountpoint=~"/|/var/lib"} < 0.05
         for: 5m
         labels:
           severity: critical
@@ -204,7 +204,7 @@ groups:
           description: "Only {{ $value | humanizePercentage }} of the disk is free. Postgres, the backups and the logs are about to fail. Free space now."
 
       - alert: HostDiskFillingUp
-        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[6h], 24 * 3600) < 0
+        expr: predict_linear(node_filesystem_avail_bytes{mountpoint=~"/|/var/lib"}[6h], 24 * 3600) < 0
         for: 30m
         labels:
           severity: warning
@@ -247,3 +247,12 @@ groups:
         annotations:
           summary: "Redis is not reachable"
           description: "The Redis exporter cannot connect. Tickets, shard leases and presence depend on it."
+
+      - alert: HostDiskMetricsMissing
+        expr: absent(node_filesystem_avail_bytes{mountpoint=~"/|/var/lib"}) and on() (up{job="node-exporter"} == 1)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The disk alerts have no data"
+          description: "node-exporter is answering but reports no filesystem mounted at / or /var/lib, so the disk space alerts cannot fire. Look at the mountpoints it reports and adjust the selector in alerts.yml."
