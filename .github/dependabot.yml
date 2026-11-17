@@ -1,0 +1,15 @@
+# Keeps the GitHub Actions in .github/workflows up to date. Each action is
+# pinned to a full commit SHA with its tag in a comment; Dependabot changes both.
+#
+# "cooldown" waits two weeks after a release before proposing it, so a
+# compromised or broken release has time to be noticed and pulled first.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: "ci"
