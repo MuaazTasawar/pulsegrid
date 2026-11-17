@@ -45,7 +45,7 @@ jobs:
           toolchain: "1.97"
       - uses: Swatinem/rust-cache@v2
       - name: Unit tests of every crate except the integration suite
-        run: cargo test --workspace --exclude integration-tests --no-fail-fast -- --test-threads=1
+        run: cargo test --workspace --exclude integration-tests --no-fail-fast
 
   integration:
     name: Integration and end-to-end tests
@@ -143,11 +143,47 @@ jobs:
           tags: |
             type=sha
             type=raw,value=latest
-      - uses: docker/build-push-action@v6
+      # Build the image once and keep it local: it is scanned before anything
+      # is pushed, so an image with a known fixable HIGH or CRITICAL
+      # vulnerability never becomes :latest.
+      - name: Build the image (not pushed yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: pulsegrid:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Trivy is downloaded from its GitHub release and pinned by SHA-256, so
+      # a swapped download fails the build. (A third-party action would be one
+      # more thing to trust; the release binary is all that is needed.) To
+      # update: pick a release at least two weeks old, take the Linux-64bit
+      # hash from that release's trivy_<version>_checksums.txt, change both
+      # values below together.
+      # Only fixable findings count (--ignore-unfixed). Accepted findings go in
+      # .trivyignore, each with a written reason.
+      - name: Scan the image for known vulnerabilities (Trivy)
+        env:
+          TRIVY_VERSION: "0.76.1"
+          TRIVY_SHA256: "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0"
+        run: |
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/trivy.tgz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tgz" -C "$RUNNER_TEMP" trivy
+          docker save pulsegrid:scan -o "$RUNNER_TEMP/image.tar"
+          "$RUNNER_TEMP/trivy" image --input "$RUNNER_TEMP/image.tar" \
+            --ignorefile .trivyignore \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --no-progress
+      # The same build again: every layer comes from the cache, so this only
+      # tags and pushes what was just scanned.
+      - name: Push the scanned image
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max

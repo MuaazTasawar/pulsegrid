@@ -13,3 +13,7 @@ backups/
 deploy/rclone/rclone.conf
 
 .deploy-state
+
+# New benchmark result files stay local. (One older result is already
+# committed; ignoring a path does not untrack a file that is tracked.)
+bench-results/

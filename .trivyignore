@@ -1,0 +1,10 @@
+# Vulnerabilities the image scan in CI should not fail on.
+#
+# CI scans the image with Trivy and fails on fixable HIGH or CRITICAL findings
+# (see the "Scan the image" step in .github/workflows/ci.yml). Unfixed findings
+# are already skipped. An entry here is a decision: write ABOVE it why the
+# finding does not apply or cannot be fixed yet, and when to look at it again.
+#
+# Example (do not uncomment without a real reason):
+#   # Reason: <why>. Revisit: <date>.
+#   CVE-0000-00000
