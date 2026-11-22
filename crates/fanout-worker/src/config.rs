@@ -47,6 +47,48 @@ fn cfg_err(msg: impl Into<String>) -> AppError {
     AppError::Config(msg.into())
 }
 
+/// Settings that can be given as a file instead of a value: set
+/// `NAME_FILE=/run/secrets/name` and the file's content is used as `NAME`.
+/// A file does not show up in `docker inspect` or in the process environment,
+/// which is why Docker secrets use this form.
+const SECRET_NAMES: &[&str] = &["REDIS_URL", "NATS_URL", "OPERATOR_API_KEYS"];
+
+fn read_secret_file(path: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+/// Resolves the `NAME_FILE` settings of `SECRET_NAMES`: each non-empty
+/// `NAME_FILE` is read and its trimmed content becomes the value of `NAME`.
+/// Setting both `NAME` and `NAME_FILE` is an error, so a stale plain value can
+/// never silently win over the file (or the other way round). Errors name the
+/// variable and the path, never the content.
+fn secrets_from_files(
+    get: &dyn Fn(&str) -> Option<String>,
+    read: &dyn Fn(&str) -> std::io::Result<String>,
+) -> Result<std::collections::HashMap<String, String>, AppError> {
+    let mut found = std::collections::HashMap::new();
+    for name in SECRET_NAMES {
+        let file_var = format!("{name}_FILE");
+        let Some(path) = get(&file_var).filter(|v| !v.trim().is_empty()) else {
+            continue;
+        };
+        if get(name).is_some_and(|v| !v.trim().is_empty()) {
+            return Err(cfg_err(format!(
+                "set either {name} or {file_var}, not both"
+            )));
+        }
+        let path = path.trim();
+        let content =
+            read(path).map_err(|e| cfg_err(format!("{file_var}: cannot read '{path}': {e}")))?;
+        let value = content.trim_start_matches('\u{feff}').trim().to_string();
+        if value.is_empty() {
+            return Err(cfg_err(format!("{file_var}: '{path}' is empty")));
+        }
+        found.insert(name.to_string(), value);
+    }
+    Ok(found)
+}
+
 fn required(get: &dyn Fn(&str) -> Option<String>, name: &str) -> Result<String, AppError> {
     get(name)
         .filter(|v| !v.trim().is_empty())
@@ -114,8 +156,11 @@ pub fn parse_prefixes(raw: &str) -> Result<Vec<String>, AppError> {
 
 impl Config {
     pub fn from_env() -> Result<Self, AppError> {
-        dotenvy::dotenv().ok();
-        Self::from_lookup(&|name| std::env::var(name).ok())
+        dotenvy::dotenv().ok(); // fine if .env is absent, e.g. in prod with real env vars
+        let env = |name: &str| std::env::var(name).ok();
+        // NAME_FILE settings (Docker secrets) are read first; see SECRET_NAMES.
+        let files = secrets_from_files(&env, &read_secret_file)?;
+        Self::from_lookup(&|name| files.get(name).cloned().or_else(|| env(name)))
     }
 
     pub fn from_lookup(get: &dyn Fn(&str) -> Option<String>) -> Result<Self, AppError> {
@@ -299,5 +344,73 @@ mod tests {
         v.insert("OPERATOR_API_KEYS", &key);
         let c = load(&v).unwrap();
         assert!(c.production && c.operator_keys.verify(&key));
+    }
+
+    fn file_secrets(
+        vars: &HashMap<&str, &str>,
+        contents: &HashMap<&str, &str>,
+    ) -> Result<HashMap<String, String>, AppError> {
+        secrets_from_files(&|k| vars.get(k).map(|v| v.to_string()), &|path| {
+            contents
+                .get(path)
+                .map(|c| c.to_string())
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+    }
+
+    #[test]
+    fn a_secret_file_is_read_trimmed_and_used_as_the_value() {
+        let mut v = base();
+        v.remove("OPERATOR_API_KEYS");
+        v.insert("OPERATOR_API_KEYS_FILE", "/run/secrets/s");
+        let contents = HashMap::from([("/run/secrets/s", "\u{feff}  file-operator-key\r\n")]);
+        let found = file_secrets(&v, &contents).unwrap();
+        assert_eq!(
+            found.get("OPERATOR_API_KEYS").map(String::as_str),
+            Some("file-operator-key")
+        );
+        let c = Config::from_lookup(&|k| {
+            found
+                .get(k)
+                .cloned()
+                .or_else(|| v.get(k).map(|x| x.to_string()))
+        })
+        .unwrap();
+        assert!(c.operator_keys.verify("file-operator-key"));
+    }
+
+    #[test]
+    fn both_a_value_and_a_file_is_refused() {
+        let mut v = base();
+        v.insert("OPERATOR_API_KEYS", "plain");
+        v.insert("OPERATOR_API_KEYS_FILE", "/run/secrets/s");
+        let contents = HashMap::from([("/run/secrets/s", "from-file")]);
+        let err = file_secrets(&v, &contents).unwrap_err().to_string();
+        assert!(err.contains("OPERATOR_API_KEYS"), "{err}");
+        assert!(err.contains("not both"), "{err}");
+    }
+
+    #[test]
+    fn an_unreadable_or_empty_file_is_reported_by_name() {
+        let mut v = base();
+        v.remove("OPERATOR_API_KEYS");
+        v.insert("OPERATOR_API_KEYS_FILE", "/run/secrets/missing");
+        let err = file_secrets(&v, &HashMap::new()).unwrap_err().to_string();
+        assert!(err.contains("OPERATOR_API_KEYS_FILE"), "{err}");
+        assert!(err.contains("/run/secrets/missing"), "{err}");
+
+        v.insert("OPERATOR_API_KEYS_FILE", "/run/secrets/blank");
+        let contents = HashMap::from([("/run/secrets/blank", " \r\n")]);
+        let err = file_secrets(&v, &contents).unwrap_err().to_string();
+        assert!(err.contains("is empty"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_file_variable_and_unrelated_names_are_ignored() {
+        let mut v = base();
+        v.insert("OPERATOR_API_KEYS_FILE", "  ");
+        v.insert("FANOUT_WORKER_PORT_FILE", "/run/secrets/s");
+        let contents = HashMap::from([("/run/secrets/s", "x")]);
+        assert!(file_secrets(&v, &contents).unwrap().is_empty());
     }
 }
