@@ -8,8 +8,17 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Maps a sqlx error to an application error. A pool timeout means every
+/// connection was busy for the whole acquire timeout: the database is
+/// overloaded for now, which is temporary and worth retrying, so it is
+/// reported as "service unavailable" and not as an internal error.
 fn db_err(e: sqlx::Error) -> AppError {
-    AppError::Database(e.to_string())
+    match e {
+        sqlx::Error::PoolTimedOut => {
+            AppError::ServiceUnavailable("the database is busy, try again shortly".into())
+        }
+        other => AppError::Database(other.to_string()),
+    }
 }
 
 pub async fn connect(database_url: &str) -> Result<PgPool, AppError> {
@@ -536,4 +545,25 @@ struct DeliveryRow {
     published_at: DateTime<Utc>,
     devices_in_shard: i32,
     devices_in_radius: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_busy_pool_is_service_unavailable_not_an_internal_error() {
+        assert!(matches!(
+            db_err(sqlx::Error::PoolTimedOut),
+            AppError::ServiceUnavailable(_)
+        ));
+    }
+
+    #[test]
+    fn other_database_errors_stay_database_errors() {
+        assert!(matches!(
+            db_err(sqlx::Error::RowNotFound),
+            AppError::Database(_)
+        ));
+    }
 }

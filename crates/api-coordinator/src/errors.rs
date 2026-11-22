@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::AppError;
@@ -47,7 +47,14 @@ impl IntoResponse for ApiError {
             self.0.to_string()
         };
 
-        (status, Json(json!({ "error": message }))).into_response()
+        let body = Json(json!({ "error": message }));
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            // A busy or briefly unavailable backend is temporary: tell
+            // clients when to try again instead of leaving them to guess.
+            (status, [(header::RETRY_AFTER, "1")], body).into_response()
+        } else {
+            (status, body).into_response()
+        }
     }
 }
 
@@ -112,5 +119,19 @@ mod tests {
     fn internal_errors_do_not_leak_details() {
         let response = ApiError(AppError::Database("password=hunter2".into())).into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn service_unavailable_asks_clients_to_retry() {
+        let response = ApiError(AppError::ServiceUnavailable("busy".into())).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let retry_after = response.headers().get(header::RETRY_AFTER).unwrap();
+        assert_eq!(retry_after.to_str().unwrap(), "1");
+    }
+
+    #[test]
+    fn other_errors_carry_no_retry_after() {
+        let response = ApiError(AppError::Database("x".into())).into_response();
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
     }
 }
