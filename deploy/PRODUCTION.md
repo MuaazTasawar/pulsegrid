@@ -57,9 +57,9 @@ echo "<token>" | docker login ghcr.io -u <github-user> --password-stdin
 
    In `.env.docker`:
 
-   - `JWT_SECRET`: a strong random value, e.g. `openssl rand -hex 32`.
-   - `OPERATOR_API_KEYS`: a strong random value (or several, comma separated).
-     This key sends alerts and opens the dashboard.
+   - `JWT_SECRET` and `OPERATOR_API_KEYS` are **not** set here any more. They
+     are secret files in `deploy/secrets/`: create them before the first
+     start (see "Secrets" below). A leftover value in this file is ignored.
    - `POSTGRES_PASSWORD`: letters and digits only, e.g. `openssl rand -hex 24`.
    - Uncomment and set `API_DOMAIN`, `WS_DOMAIN` and `ACME_EMAIL`.
    - Optionally `PULSEGRID_VERSION=sha-<short commit>` to run an exact build
@@ -89,6 +89,66 @@ echo "<token>" | docker login ghcr.io -u <github-user> --password-stdin
    Caddy obtains the certificates for both names when it starts; follow it
    with `$COMPOSE logs -f caddy`. If DNS is wrong or 80/443 are not
    reachable, issuance fails and the log says so.
+
+## Secrets
+
+Three secrets are files in `deploy/secrets/` (git-ignored). Docker mounts
+them into the containers under `/run/secrets/`, so they are not environment
+values: they do not show up in `docker inspect`, in `$COMPOSE config` or in a
+container's environment.
+
+| File | Used by | What it is |
+|---|---|---|
+| `jwt_secret` | coordinator | Signs and verifies the device tokens. |
+| `operator_api_keys` | coordinator, worker | The operator key (or several, comma separated): sends alerts, opens the dashboard and the worker's `/admin`. |
+| `telegram_bot_token` | Alertmanager | The Telegram bot token (see "Monitoring and alerts"). |
+
+Create them once, on the server, in the repository directory. Both values
+must be strong random ones: production refuses weak or placeholder secrets.
+
+```sh
+umask 077
+mkdir -p deploy/secrets
+openssl rand -hex 32 > deploy/secrets/jwt_secret
+openssl rand -hex 32 > deploy/secrets/operator_api_keys
+chmod 700 deploy/secrets
+chmod 444 deploy/secrets/*
+```
+
+**Why 444 inside a 700 directory.** Compose mounts each file with the
+permissions it has on the server, and the containers do not run as your user
+(the application as an unprivileged user, Alertmanager as `nobody`). A file
+that only you can read cannot be read inside the container. The directory is
+closed to other users of the server, so they cannot reach the files, while
+the mount itself still works. If a service logs `cannot read
+'/run/secrets/...': Permission denied`, this is the cause.
+
+Do not put `JWT_SECRET` or `OPERATOR_API_KEYS` in `.env.docker`. If an old
+value is still there it is ignored (the overlay blanks it), but delete it so
+that no copy of the secret lies around.
+
+**Rotating a secret.** Write a new file and move it into place, then recreate
+the services: a running container keeps seeing the old file until it is
+recreated.
+
+```sh
+openssl rand -hex 32 > deploy/secrets/operator_api_keys.new
+chmod 444 deploy/secrets/operator_api_keys.new
+mv -f deploy/secrets/operator_api_keys.new deploy/secrets/operator_api_keys
+$COMPOSE up -d --force-recreate api-coordinator fanout-worker
+```
+
+Rotating `jwt_secret` invalidates every device token: devices have to
+register again. Rotating the operator key means telling the operators the new
+one.
+
+**Back up `deploy/secrets/` as well** (a password manager is enough). It is
+not part of the database dumps, and without the original `jwt_secret` every
+device token stops working after a restore.
+
+Not covered yet: the database password still lives in `.env.docker` as
+`POSTGRES_PASSWORD`, and Compose places it in the environment of the
+database, the coordinator, the backup service and the Postgres exporter.
 
 ## Check that it is closed and working
 
@@ -151,7 +211,8 @@ ssh -L 9090:localhost:9090 -L 9093:localhost:9093 <user>@<server>
 3. Put that number in `chat_id` in `deploy/alertmanager/alertmanager.yml`
    (it is not a secret; commit it).
 4. Put the token, and nothing else, in `deploy/secrets/telegram_bot_token`
-   (`chmod 600`). The directory is git-ignored; never commit it.
+   (permissions: see "Secrets" below). The directory is git-ignored; never
+   commit it.
 
 **Prove the whole path works** (rules, Alertmanager, Telegram) by raising a
 test alert; the message arrives after about 30 seconds:
@@ -320,7 +381,7 @@ Set `API_DOMAIN=localhost`, `WS_DOMAIN=ws.localhost`, any `ACME_EMAIL` and
 `POSTGRES_PASSWORD` (use the password your existing `pgdata` volume was
 created with: `pulsegrid` for the development volume) in your shell, and
 create a dummy `deploy/secrets/telegram_bot_token` (any text; no alert is
-sent unless one fires). Then
+sent unless one fires) and the two secret files (see "Secrets"). Then
 either log in and `pull` as above, or build the image on your machine with
 `$COMPOSE up -d --build` (slow the first time). Wait about 20 seconds before
 testing. Caddy signs `localhost` with its own certificate authority, so

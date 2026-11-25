@@ -81,6 +81,17 @@ services:
       TRUST_PROXY_HEADERS: "true"
       RATE_LIMIT_DISABLED: "false"
       DATABASE_URL: postgres://pulsegrid:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.docker}@postgres:5432/pulsegrid
+      # The signing key and the operator keys are Docker secrets (files in
+      # deploy/secrets/), not environment values. The plain names are blanked
+      # so a leftover value in .env.docker is not passed on as well: the app
+      # refuses to start when a value and a file are both set.
+      JWT_SECRET: ""
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      OPERATOR_API_KEYS: ""
+      OPERATOR_API_KEYS_FILE: /run/secrets/operator_api_keys
+    secrets:
+      - jwt_secret
+      - operator_api_keys
     logging: *default-logging
 
   fanout-worker:
@@ -95,6 +106,13 @@ services:
       # The address the coordinator hands to devices: it must be the public
       # TLS name served by Caddy, not localhost.
       WORKER_PUBLIC_URL: wss://${WS_DOMAIN:?set WS_DOMAIN in .env.docker}
+      # Operator keys come from a secret file (see the coordinator above). The
+      # worker has no signing-key setting, so that value is blanked here.
+      JWT_SECRET: ""
+      OPERATOR_API_KEYS: ""
+      OPERATOR_API_KEYS_FILE: /run/secrets/operator_api_keys
+    secrets:
+      - operator_api_keys
     logging: *default-logging
 
   # Daily database dumps (deploy/backup/backup.sh), kept in ./backups on the
@@ -203,6 +221,12 @@ services:
 secrets:
   telegram_bot_token:
     file: ./deploy/secrets/telegram_bot_token
+  # The app secrets: see "Secrets" in deploy/PRODUCTION.md for how to create
+  # them (and for the permissions the containers need to read them).
+  jwt_secret:
+    file: ./deploy/secrets/jwt_secret
+  operator_api_keys:
+    file: ./deploy/secrets/operator_api_keys
 
 volumes:
   caddy_data:
