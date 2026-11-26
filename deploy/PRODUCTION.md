@@ -146,6 +146,14 @@ one.
 not part of the database dumps, and without the original `jwt_secret` every
 device token stops working after a restore.
 
+**A missing file is dangerous, not just inconvenient.** If a secret file does
+not exist when the stack starts, Compose only prints a warning, Docker creates
+an empty *directory* at that path (as root on a Linux server), and the service
+then fails with `cannot read '/run/secrets/...': Is a directory`.
+`deploy/deploy.sh` refuses to start when any of the three files is missing,
+empty or a directory. If you find a directory there, remove it
+(`sudo rm -r deploy/secrets/jwt_secret`) and create the file.
+
 Not covered yet: the database password still lives in `.env.docker` as
 `POSTGRES_PASSWORD`, and Compose places it in the environment of the
 database, the coordinator, the backup service and the Postgres exporter.

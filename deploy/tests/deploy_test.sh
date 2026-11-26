@@ -12,7 +12,10 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/repo/deploy/secrets"
 cp "$HERE/../deploy.sh" "$T/repo/deploy/deploy.sh"
-touch "$T/repo/docker-compose.yml" "$T/repo/docker-compose.prod.yml" "$T/repo/deploy/secrets/telegram_bot_token"
+touch "$T/repo/docker-compose.yml" "$T/repo/docker-compose.prod.yml"
+# deploy.sh wants non-empty secret files; the content is distinctive so that T17
+# can check it is never printed
+for s in telegram_bot_token jwt_secret operator_api_keys; do echo "file-content-of-$s" > "$T/repo/deploy/secrets/$s"; done
 
 cat > "$T/bin/docker" <<'SHIM'
 #!/usr/bin/env bash
@@ -185,7 +188,7 @@ check '[ $RC -eq 1 ] && echo "$OUT" | grep -q "telegram_bot_token is missing"' "
 mv $T/tok $T/repo/deploy/secrets/telegram_bot_token
 
 echo "--- T17 no secret value ever appears in any output"
-check '! grep -Eq "s3cret-pw|very-secret-jwt" $T/all-output.txt' "passwords and secrets were never printed"
+check '! grep -Eq "s3cret-pw|very-secret-jwt|file-content-of-" $T/all-output.txt' "passwords and secrets were never printed"
 
 echo "--- T18 required values may come from the environment (Compose allows it)"
 reset; sed -i '/^POSTGRES_PASSWORD=/d; /^API_DOMAIN=/d' $T/repo/.env.docker; export FAKE_RUNNING=postgres
@@ -208,6 +211,27 @@ D --version sha-2222222
 check '[ $RC -eq 2 ] && [ "$(ver)" = sha-2222222 ]' "exit 2, new version kept"
 check 'echo "$OUT" | grep -q "answered .000. for [1-9][0-9]*s"' "the warning says how long it waited"
 check 'echo "$OUT" | grep -q "DNS, ports 80/443"' "and where to look"
+
+echo "--- T21 every secret file is checked: missing, empty, or a directory made by Docker"
+for s in telegram_bot_token jwt_secret operator_api_keys; do
+  f=$T/repo/deploy/secrets/$s
+  reset; export FAKE_RUNNING=postgres
+  mv $f $T/saved-secret
+  D --version sha-2222222
+  check '[ $RC -eq 1 ] && echo "$OUT" | grep -q "secrets/$s is missing or empty"' "$s missing: refused"
+  check '[ ! -s $T/calls.log ] && [ "$(ver)" = sha-1111111 ]' "$s missing: stopped before any docker call, env untouched"
+  : > $f
+  D --version sha-2222222
+  check '[ $RC -eq 1 ] && echo "$OUT" | grep -q "secrets/$s is missing or empty"' "$s empty: refused"
+  rm -f $f; mkdir $f
+  D --version sha-2222222
+  check '[ $RC -eq 1 ] && echo "$OUT" | grep -q "secrets/$s is a directory" && echo "$OUT" | grep -q "rm -r"' "$s a directory: refused, with the fix"
+  check '[ ! -s $T/calls.log ]' "$s a directory: no docker call"
+  rmdir $f; mv $T/saved-secret $f
+done
+reset; export FAKE_RUNNING=postgres
+D --version sha-2222222
+check '[ $RC -eq 0 ]' "with all three secret files back, the deploy goes through"
 
 echo; echo "RESULT: $PASS passed, $FAILN failed"
 [ "$FAILN" -eq 0 ]

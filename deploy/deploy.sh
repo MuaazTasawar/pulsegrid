@@ -9,7 +9,8 @@
 #   deploy/deploy.sh --dry-run             print what would happen, change nothing
 #
 # What it does, in this order, stopping at the first problem:
-#   1. checks the settings (names only, never values) and validates the compose files;
+#   1. checks the settings (names only, never values), the secret files and the
+#      compose files;
 #   2. takes a database backup (skipped on a first deploy, when nothing runs yet);
 #   3. pulls the new image BEFORE touching anything running, so a typo in the
 #      tag or a registry problem changes nothing and causes no downtime;
@@ -157,7 +158,15 @@ deploy_failed() {
 for name in API_DOMAIN WS_DOMAIN ACME_EMAIL POSTGRES_PASSWORD; do
   [ -n "$(get_var "$name")" ] || [ -n "${!name:-}" ] || die "$name is not set in $ENV_FILE or the environment"
 done
-[ -f deploy/secrets/telegram_bot_token ] || die "deploy/secrets/telegram_bot_token is missing (see deploy/PRODUCTION.md, Monitoring)"
+# The secret files must be real, non-empty files. If one is missing when the
+# stack starts, Docker only warns and creates an empty DIRECTORY at that path
+# (as root); the service then dies with "Is a directory". So check first.
+for secret in telegram_bot_token jwt_secret operator_api_keys; do
+  path="deploy/secrets/$secret"
+  [ ! -d "$path" ] ||
+    die "$path is a directory (Docker creates one when the file is missing at start-up): remove it (sudo rm -r $path), create the file, see deploy/PRODUCTION.md, Secrets"
+  [ -s "$path" ] || die "$path is missing or empty (see deploy/PRODUCTION.md, Secrets)"
+done
 
 CURRENT=$(get_var PULSEGRID_VERSION)
 [ -n "$CURRENT" ] || CURRENT=latest
